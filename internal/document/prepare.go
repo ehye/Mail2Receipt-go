@@ -41,6 +41,10 @@ func Prepare(doc message.Document) ([]byte, error) {
 			for _, attr := range node.Attr {
 				keep := true
 				switch strings.ToLower(attr.Key) {
+				case "href":
+					if node.Data == "link" && isRemoteHTTPURL(attr.Val) {
+						keep = false
+					}
 				case "src", "background":
 					attr.Val, keep, err = normalizeImageReference(attr.Val, doc.CID)
 				case "srcset":
@@ -129,11 +133,15 @@ func normalizeImageReference(value string, assets map[string]message.Asset) (str
 	if logo, ok := embeddedLogo(value); ok {
 		return logo, true, nil
 	}
-	parsed, err := url.Parse(strings.TrimSpace(value))
-	if err == nil && (strings.EqualFold(parsed.Scheme, "http") || strings.EqualFold(parsed.Scheme, "https")) {
+	if isRemoteHTTPURL(value) {
 		return "", false, nil
 	}
 	return value, true, nil
+}
+
+func isRemoteHTTPURL(value string) bool {
+	parsed, err := url.Parse(strings.TrimSpace(value))
+	return err == nil && (strings.EqualFold(parsed.Scheme, "http") || strings.EqualFold(parsed.Scheme, "https"))
 }
 
 func normalizeSrcset(value string, assets map[string]message.Asset) (string, error) {
@@ -225,8 +233,7 @@ func containsRemoteCSSURL(value string) bool {
 	for _, match := range cssURLPattern.FindAllString(value, -1) {
 		open := strings.IndexByte(match, '(')
 		inner := strings.Trim(strings.TrimSpace(match[open+1:len(match)-1]), "'\"")
-		parsed, err := url.Parse(strings.TrimSpace(inner))
-		if err == nil && (strings.EqualFold(parsed.Scheme, "http") || strings.EqualFold(parsed.Scheme, "https")) {
+		if isRemoteHTTPURL(inner) {
 			return true
 		}
 	}
@@ -269,10 +276,18 @@ func splitCSS(value string, separator byte) []string {
 	start := 0
 	quote := byte(0)
 	depth := 0
+	inComment := false
 	for i := 0; i < len(value); i++ {
 		char := value[i]
+		if inComment {
+			if char == '*' && i+1 < len(value) && value[i+1] == '/' {
+				inComment = false
+				i++
+			}
+			continue
+		}
 		if quote != 0 {
-			if char == quote && (i == 0 || value[i-1] != '\\') {
+			if char == quote && !isEscaped(value, i) {
 				quote = 0
 			}
 			continue
@@ -280,6 +295,11 @@ func splitCSS(value string, separator byte) []string {
 		switch char {
 		case '\'', '"':
 			quote = char
+		case '/':
+			if i+1 < len(value) && value[i+1] == '*' {
+				inComment = true
+				i++
+			}
 		case '(':
 			depth++
 		case ')':
@@ -296,6 +316,14 @@ func splitCSS(value string, separator byte) []string {
 	return append(parts, value[start:])
 }
 
+func isEscaped(value string, pos int) bool {
+	backslashes := 0
+	for pos--; pos >= 0 && value[pos] == '\\'; pos-- {
+		backslashes++
+	}
+	return backslashes%2 == 1
+}
+
 func indexCSS(value string, separator byte) int {
 	parts := splitCSS(value, separator)
 	if len(parts) < 2 {
@@ -307,20 +335,28 @@ func indexCSS(value string, separator byte) int {
 func normalizeStylesheet(value string, assets map[string]message.Asset) (string, error) {
 	var output strings.Builder
 	for pos := 0; pos < len(value); {
-		open := strings.IndexByte(value[pos:], '{')
+		open := findCSSBrace(value, pos)
 		if open < 0 {
-			output.WriteString(value[pos:])
+			output.WriteString(removeRemoteImports(value[pos:]))
 			break
 		}
-		open += pos
-		output.WriteString(value[pos : open+1])
+		output.WriteString(removeRemoteImports(value[pos:open]))
+		output.WriteByte('{')
 		depth := 1
 		quote := byte(0)
+		inComment := false
 		close := open + 1
 		for ; close < len(value) && depth > 0; close++ {
 			char := value[close]
+			if inComment {
+				if char == '*' && close+1 < len(value) && value[close+1] == '/' {
+					inComment = false
+					close++
+				}
+				continue
+			}
 			if quote != 0 {
-				if char == quote && value[close-1] != '\\' {
+				if char == quote && !isEscaped(value, close) {
 					quote = 0
 				}
 				continue
@@ -328,6 +364,11 @@ func normalizeStylesheet(value string, assets map[string]message.Asset) (string,
 			switch char {
 			case '\'', '"':
 				quote = char
+			case '/':
+				if close+1 < len(value) && value[close+1] == '*' {
+					inComment = true
+					close++
+				}
 			case '{':
 				depth++
 			case '}':
@@ -341,7 +382,7 @@ func normalizeStylesheet(value string, assets map[string]message.Asset) (string,
 		body := value[open+1 : close-1]
 		var normalized string
 		var err error
-		if strings.Contains(body, "{") {
+		if findCSSBrace(body, 0) >= 0 {
 			normalized, err = normalizeStylesheet(body, assets)
 		} else {
 			normalized, err = normalizeDeclarations(body, assets)
@@ -354,4 +395,79 @@ func normalizeStylesheet(value string, assets map[string]message.Asset) (string,
 		pos = close
 	}
 	return output.String(), nil
+}
+
+func findCSSBrace(value string, start int) int {
+	quote := byte(0)
+	inComment := false
+	for i := start; i < len(value); i++ {
+		char := value[i]
+		if inComment {
+			if char == '*' && i+1 < len(value) && value[i+1] == '/' {
+				inComment = false
+				i++
+			}
+			continue
+		}
+		if quote != 0 {
+			if char == quote && !isEscaped(value, i) {
+				quote = 0
+			}
+			continue
+		}
+		switch char {
+		case '\'', '"':
+			quote = char
+		case '/':
+			if i+1 < len(value) && value[i+1] == '*' {
+				inComment = true
+				i++
+			}
+		case '{':
+			return i
+		}
+	}
+	return -1
+}
+
+func removeRemoteImports(value string) string {
+	parts := splitCSS(value, ';')
+	var output strings.Builder
+	for i, part := range parts {
+		if !isRemoteImport(part) {
+			output.WriteString(part)
+			if i < len(parts)-1 {
+				output.WriteByte(';')
+			}
+		}
+	}
+	return output.String()
+}
+
+func isRemoteImport(value string) bool {
+	trimmed := strings.TrimSpace(value)
+	for strings.HasPrefix(trimmed, "/*") {
+		end := strings.Index(trimmed[2:], "*/")
+		if end < 0 {
+			return false
+		}
+		trimmed = strings.TrimSpace(trimmed[end+4:])
+	}
+	if len(trimmed) < len("@import") || !strings.EqualFold(trimmed[:len("@import")], "@import") {
+		return false
+	}
+	reference := strings.TrimSpace(trimmed[len("@import"):])
+	if containsRemoteCSSURL(reference) {
+		return true
+	}
+	if len(reference) == 0 || (reference[0] != '\'' && reference[0] != '"') {
+		return false
+	}
+	quote := reference[0]
+	for i := 1; i < len(reference); i++ {
+		if reference[i] == quote && !isEscaped(reference, i) {
+			return isRemoteHTTPURL(reference[1:i])
+		}
+	}
+	return false
 }

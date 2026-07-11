@@ -191,6 +191,90 @@ func TestPrepareNormalizesOfflineImageReferences(t *testing.T) {
 	}
 }
 
+func TestPrepareRemovesRemoteLinkResourcesButPreservesHyperlinks(t *testing.T) {
+	const input = `<html><head>
+<link rel="stylesheet" href="https://assets.example/receipt.css">
+<link rel="icon" href="HTTP://assets.example/icon.png">
+<link rel="preload" href="https://assets.example/font.woff2">
+</head><body><a href="https://example.com/order">order</a><area href="https://example.com/map"></body></html>`
+
+	got, err := Prepare(message.Document{HTML: []byte(input)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(got)
+	if strings.Contains(text, "assets.example") {
+		t.Fatalf("prepared HTML retained remote link resource: %s", got)
+	}
+	for _, want := range []string{`href="https://example.com/order"`, `href="https://example.com/map"`} {
+		if !strings.Contains(text, want) {
+			t.Errorf("prepared HTML removed hyperlink %q: %s", want, got)
+		}
+	}
+}
+
+func TestPrepareRemovesRemoteCSSImports(t *testing.T) {
+	const input = `<html><head><style>
+/* lead comment */ @import "https://assets.example/quoted.css" screen;
+@import url('HTTP://assets.example/url.css');
+@import "local.css";
+.receipt { color: green; }
+</style></head><body></body></html>`
+
+	got, err := Prepare(message.Document{HTML: []byte(input)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(got)
+	if strings.Contains(text, "assets.example") {
+		t.Fatalf("prepared HTML retained remote CSS import: %s", got)
+	}
+	for _, want := range []string{`@import "local.css"`, `color: green`} {
+		if !strings.Contains(text, want) {
+			t.Errorf("prepared HTML removed nonremote CSS %q: %s", want, got)
+		}
+	}
+}
+
+func TestPrepareScansStylesheetBracesOutsideQuotesAndComments(t *testing.T) {
+	const input = `<html><head><style>
+/* misleading } { braces */
+.receipt { content: "literal } and { braces"; background: url(https://assets.example/bypass.png); color: navy; }
+</style></head><body></body></html>`
+
+	got, err := Prepare(message.Document{HTML: []byte(input)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(got)
+	if strings.Contains(text, "assets.example") {
+		t.Fatalf("prepared HTML retained remote CSS after misleading braces: %s", got)
+	}
+	for _, want := range []string{`literal } and { braces`, `color: navy`} {
+		if !strings.Contains(text, want) {
+			t.Errorf("prepared HTML removed CSS %q: %s", want, got)
+		}
+	}
+}
+
+func TestPrepareUsesBackslashParityForCSSQuotes(t *testing.T) {
+	const input = `<html><head></head><body><div style='content: "even\\"; background: url(https://assets.example/bypass.png); color: maroon'></div><div style='content: "odd\";still quoted"; color: teal'></div></body></html>`
+
+	got, err := Prepare(message.Document{HTML: []byte(input)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(got)
+	if strings.Contains(text, "assets.example") {
+		t.Fatalf("prepared HTML retained remote CSS after even backslashes: %s", got)
+	}
+	for _, want := range []string{`even\\`, `color: maroon`, `odd\&#34;;still quoted`, `color: teal`} {
+		if !strings.Contains(text, want) {
+			t.Errorf("prepared HTML removed CSS %q: %s", want, got)
+		}
+	}
+}
+
 func TestPrepareInjectsOnePrintStyleAsFinalHeadChild(t *testing.T) {
 	got, err := Prepare(message.Document{HTML: []byte(`<html><head><title>Receipt</title></head><body></body></html>`)})
 	if err != nil {
