@@ -2,6 +2,7 @@ package document
 
 import (
 	"bytes"
+	"errors"
 	"strings"
 	"testing"
 
@@ -36,28 +37,80 @@ func TestPrepareInlinesCIDReferences(t *testing.T) {
 	}
 }
 
+func TestPrepareLooksUpCIDAssetsCaseInsensitively(t *testing.T) {
+	doc := message.Document{
+		HTML: []byte(`<img src="cid:logo@example">`),
+		CID: map[string]message.Asset{
+			"Logo@Example": {MediaType: "image/png", Data: []byte{1, 2, 3}},
+		},
+	}
+
+	got, err := Prepare(doc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(got, []byte(`data:image/png;base64,AQID`)) {
+		t.Fatalf("CID was not replaced: %s", got)
+	}
+}
+
+func TestPreparePreservesCommaBearingSrcsetURLs(t *testing.T) {
+	const remote = `https://example.com/image,cid:not-a-candidate.png?crop=1,2 1x`
+	doc := message.Document{
+		HTML: []byte(`<img srcset="` + remote + `, cid:Logo@ID 2x">`),
+		CID: map[string]message.Asset{
+			"logo@id": {MediaType: "image/png", Data: []byte{1, 2, 3}},
+		},
+	}
+
+	got, err := Prepare(doc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{remote, `data:image/png;base64,AQID 2x`} {
+		if !bytes.Contains(got, []byte(want)) {
+			t.Errorf("prepared HTML does not contain %q: %s", want, got)
+		}
+	}
+}
+
 func TestPrepareRejectsInvalidCIDAssets(t *testing.T) {
 	tests := []struct {
-		name string
-		doc  message.Document
+		name      string
+		doc       message.Document
+		want      error
+		sensitive string
 	}{
 		{
-			name: "missing",
-			doc:  message.Document{HTML: []byte(`<img src="cid:missing">`)},
+			name:      "missing",
+			doc:       message.Document{HTML: []byte(`<img src="cid:private-account-id">`)},
+			want:      ErrMissingCID,
+			sensitive: "private-account-id",
 		},
 		{
 			name: "not image",
 			doc: message.Document{
-				HTML: []byte(`<div style="background:url(cid:file)"></div>`),
-				CID:  map[string]message.Asset{"file": {MediaType: "text/plain", Data: []byte("x")}},
+				HTML: []byte(`<div style="background:url(cid:private-file-id)"></div>`),
+				CID:  map[string]message.Asset{"private-file-id": {MediaType: "text/plain", Data: []byte("secret-content")}},
 			},
+			want:      ErrNonImageCID,
+			sensitive: "private-file-id",
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if _, err := Prepare(tt.doc); err == nil {
+			_, err := Prepare(tt.doc)
+			if err == nil {
 				t.Fatal("Prepare returned nil error")
+			}
+			if !errors.Is(err, tt.want) {
+				t.Fatalf("error = %v, want errors.Is(_, %v)", err, tt.want)
+			}
+			for _, sensitive := range []string{tt.sensitive, "secret-content"} {
+				if strings.Contains(err.Error(), sensitive) {
+					t.Fatalf("error leaks sensitive value %q: %v", sensitive, err)
+				}
 			}
 		})
 	}

@@ -81,7 +81,7 @@ func replaceCID(value string, assets map[string]message.Asset) (string, error) {
 	if id == "" || strings.IndexFunc(id, unicode.IsSpace) >= 0 {
 		return value, nil
 	}
-	asset, ok := assets[strings.ToLower(id)]
+	asset, ok := lookupAsset(assets, id)
 	if !ok {
 		return "", ErrMissingCID
 	}
@@ -91,22 +91,72 @@ func replaceCID(value string, assets map[string]message.Asset) (string, error) {
 	return "data:" + asset.MediaType + ";base64," + base64.StdEncoding.EncodeToString(asset.Data), nil
 }
 
-func replaceSrcset(value string, assets map[string]message.Asset) (string, error) {
-	parts := strings.Split(value, ",")
-	for i, part := range parts {
-		leading := len(part) - len(strings.TrimLeftFunc(part, unicode.IsSpace))
-		candidate := part[leading:]
-		urlEnd := strings.IndexFunc(candidate, unicode.IsSpace)
-		if urlEnd < 0 {
-			urlEnd = len(candidate)
+func lookupAsset(assets map[string]message.Asset, id string) (message.Asset, bool) {
+	for key, asset := range assets {
+		if strings.EqualFold(key, id) {
+			return asset, true
 		}
-		replaced, err := replaceCID(candidate[:urlEnd], assets)
+	}
+	return message.Asset{}, false
+}
+
+func replaceSrcset(value string, assets map[string]message.Asset) (string, error) {
+	var output strings.Builder
+	last := 0
+	for pos := 0; pos < len(value); {
+		for pos < len(value) && (isASCIISpace(value[pos]) || value[pos] == ',') {
+			pos++
+		}
+		urlStart := pos
+		for pos < len(value) && !isASCIISpace(value[pos]) {
+			pos++
+		}
+		urlEnd := pos
+		for urlEnd > urlStart && value[urlEnd-1] == ',' {
+			urlEnd--
+		}
+		if urlStart == urlEnd {
+			continue
+		}
+
+		replaced, err := replaceCID(value[urlStart:urlEnd], assets)
 		if err != nil {
 			return "", err
 		}
-		parts[i] = part[:leading] + replaced + candidate[urlEnd:]
+		if replaced != value[urlStart:urlEnd] {
+			output.WriteString(value[last:urlStart])
+			output.WriteString(replaced)
+			last = urlEnd
+		}
+
+		parentheses := 0
+		for pos < len(value) {
+			switch value[pos] {
+			case '(':
+				parentheses++
+			case ')':
+				if parentheses > 0 {
+					parentheses--
+				}
+			case ',':
+				if parentheses == 0 {
+					pos++
+					goto nextCandidate
+				}
+			}
+			pos++
+		}
+	nextCandidate:
 	}
-	return strings.Join(parts, ","), nil
+	if last == 0 {
+		return value, nil
+	}
+	output.WriteString(value[last:])
+	return output.String(), nil
+}
+
+func isASCIISpace(value byte) bool {
+	return value == ' ' || value == '\t' || value == '\n' || value == '\f' || value == '\r'
 }
 
 func replaceStyleURLs(value string, assets map[string]message.Asset) (string, error) {
