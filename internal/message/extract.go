@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"strings"
 
 	gomessage "github.com/emersion/go-message"
@@ -18,6 +19,8 @@ const (
 
 var (
 	ErrMessageTooLarge  = errors.New("message too large")
+	ErrReadMessage      = errors.New("read message")
+	ErrInvalidLimit     = errors.New("invalid message size limit")
 	ErrMalformedMIME    = errors.New("malformed MIME")
 	ErrMissingHTML      = errors.New("missing HTML")
 	ErrCIDTooLarge      = errors.New("CID image too large")
@@ -36,10 +39,13 @@ type Document struct {
 
 func Extract(r io.Reader, maxBytes int64) (Document, error) {
 	var doc Document
+	if maxBytes < 0 || maxBytes == math.MaxInt64 {
+		return doc, ErrInvalidLimit
+	}
 
 	raw, err := io.ReadAll(io.LimitReader(r, maxBytes+1))
 	if err != nil {
-		return doc, fmt.Errorf("read message: %w", err)
+		return doc, ErrReadMessage
 	}
 	if int64(len(raw)) > maxBytes {
 		return doc, ErrMessageTooLarge
@@ -77,7 +83,7 @@ func Extract(r io.Reader, maxBytes int64) (Document, error) {
 		}
 		data, err := io.ReadAll(io.LimitReader(part.Body, maxCIDBytes+1))
 		if err != nil {
-			return fmt.Errorf("read CID image: %w", err)
+			return fmt.Errorf("%w: read CID image", ErrMalformedMIME)
 		}
 		if len(data) > maxCIDBytes {
 			return ErrCIDTooLarge

@@ -3,9 +3,20 @@ package message
 import (
 	"bytes"
 	"errors"
+	"fmt"
+	"io"
+	"math"
 	"strings"
 	"testing"
 )
+
+type errorReader struct {
+	err error
+}
+
+func (r errorReader) Read([]byte) (int, error) {
+	return 0, r.err
+}
 
 func TestExtractPrefersDecodedHTML(t *testing.T) {
 	raw := "MIME-Version: 1.0\r\nContent-Type: multipart/alternative; boundary=x\r\n\r\n" +
@@ -114,4 +125,79 @@ func TestExtractRejectsCIDImageLargerThanLimit(t *testing.T) {
 	if !errors.Is(err, ErrCIDTooLarge) {
 		t.Fatalf("error = %v", err)
 	}
+}
+
+func TestExtractSanitizesSourceReadError(t *testing.T) {
+	const secret = "account-secret-123"
+	_, err := Extract(errorReader{err: errors.New(secret)}, 1<<20)
+	if !errors.Is(err, ErrReadMessage) {
+		t.Fatalf("error = %v", err)
+	}
+	if strings.Contains(err.Error(), secret) {
+		t.Fatalf("error disclosed input-derived text: %q", err)
+	}
+}
+
+func TestExtractSanitizesCIDDecodeError(t *testing.T) {
+	const secret = "account-secret-123"
+	raw := "MIME-Version: 1.0\r\nContent-Type: multipart/related; boundary=x\r\n\r\n" +
+		"--x\r\nContent-Type: text/html\r\n\r\nreceipt\r\n" +
+		"--x\r\nContent-Type: image/png\r\nContent-ID: <bad>\r\nContent-Transfer-Encoding: base64\r\n\r\n" +
+		secret + "%%%\r\n--x--\r\n"
+
+	_, err := Extract(strings.NewReader(raw), 1<<20)
+	if !errors.Is(err, ErrMalformedMIME) {
+		t.Fatalf("error = %v", err)
+	}
+	if strings.Contains(err.Error(), secret) {
+		t.Fatalf("error disclosed input-derived text: %q", err)
+	}
+}
+
+func TestExtractAcceptsExactlyAggregateCIDLimit(t *testing.T) {
+	raw := multipartWithCIDAssets(t, []int{10 << 20, 10 << 20, 10 << 20, 10 << 20, 10 << 20})
+	doc, err := Extract(bytes.NewReader(raw), int64(len(raw)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var total int
+	for _, asset := range doc.CID {
+		total += len(asset.Data)
+	}
+	if total != 50<<20 {
+		t.Fatalf("aggregate CID bytes = %d", total)
+	}
+}
+
+func TestExtractRejectsByteBeyondAggregateCIDLimit(t *testing.T) {
+	raw := multipartWithCIDAssets(t, []int{10 << 20, 10 << 20, 10 << 20, 10 << 20, 10 << 20, 1})
+	_, err := Extract(bytes.NewReader(raw), int64(len(raw)))
+	if !errors.Is(err, ErrCIDTotalTooLarge) {
+		t.Fatalf("error = %v", err)
+	}
+}
+
+func TestExtractRejectsInvalidMaxBytes(t *testing.T) {
+	for _, maxBytes := range []int64{-1, math.MaxInt64} {
+		t.Run(fmt.Sprint(maxBytes), func(t *testing.T) {
+			_, err := Extract(strings.NewReader("Content-Type: text/html\r\n\r\nreceipt"), maxBytes)
+			if !errors.Is(err, ErrInvalidLimit) {
+				t.Fatalf("error = %v", err)
+			}
+		})
+	}
+}
+
+func multipartWithCIDAssets(t *testing.T, sizes []int) []byte {
+	t.Helper()
+	var raw bytes.Buffer
+	io.WriteString(&raw, "MIME-Version: 1.0\r\nContent-Type: multipart/related; boundary=x\r\n\r\n")
+	io.WriteString(&raw, "--x\r\nContent-Type: text/html\r\n\r\nreceipt\r\n")
+	for i, size := range sizes {
+		fmt.Fprintf(&raw, "--x\r\nContent-Type: image/png\r\nContent-ID: <%d>\r\n\r\n", i)
+		io.CopyN(&raw, strings.NewReader(strings.Repeat("x", size)), int64(size))
+		io.WriteString(&raw, "\r\n")
+	}
+	io.WriteString(&raw, "--x--\r\n")
+	return raw.Bytes()
 }
