@@ -15,6 +15,7 @@ import (
 
 	"github.com/chromedp/cdproto/network"
 	"github.com/chromedp/cdproto/page"
+	"github.com/chromedp/cdproto/runtime"
 	"github.com/chromedp/chromedp"
 )
 
@@ -23,6 +24,7 @@ const (
 	minScale        = 0.50
 	printableWidth  = 132 * 96 / 25.4
 	printableHeight = 194 * 96 / 25.4
+	networkQuiet    = 300 * time.Millisecond
 )
 
 var pdfPagePattern = regexp.MustCompile(`/Type\s*/Page(?:\s|[/<])`)
@@ -68,29 +70,47 @@ func Render(ctx context.Context, executable, htmlPath string) (Result, error) {
 	if err := chromedp.Run(browserCtx); err != nil {
 		return Result{}, errors.New("browser could not start")
 	}
-	renderCtx, cancelRender := context.WithTimeout(browserCtx, 15*time.Second)
-	defer cancelRender()
-
 	images := &imageState{
 		urls:    make(map[network.RequestID]string),
 		pending: make(map[network.RequestID]struct{}),
 		changed: make(chan struct{}, 1),
 	}
-	chromedp.ListenTarget(renderCtx, images.listen)
+	chromedp.ListenTarget(browserCtx, images.listen)
 
 	absPath, err := filepath.Abs(htmlPath)
 	if err != nil {
 		return Result{}, fmt.Errorf("resolve HTML path: %w", err)
 	}
 	pageURL := (&url.URL{Scheme: "file", Path: filepath.ToSlash(absPath)}).String()
-	if err := chromedp.Run(renderCtx, network.Enable(), chromedp.Navigate(pageURL)); err != nil {
+	loadCtx, cancelLoad := context.WithTimeout(browserCtx, 15*time.Second)
+	if err := chromedp.Run(loadCtx, network.Enable(), chromedp.Navigate(pageURL)); err != nil {
+		cancelLoad()
 		if failed := images.failedOrPending(); failed != "" {
 			return Result{}, fmt.Errorf("image failed: %s", sanitizeURL(failed))
 		}
 		return Result{}, errors.New("browser could not load receipt")
 	}
-	if failed := images.wait(renderCtx); failed != "" {
+	cancelLoad()
+
+	assetCtx, cancelAssets := context.WithTimeout(browserCtx, 15*time.Second)
+	if failed, err := images.wait(assetCtx, networkQuiet); err != nil {
+		cancelAssets()
+		if failed != "" {
+			return Result{}, fmt.Errorf("image failed: %s", sanitizeURL(failed))
+		}
+		return Result{}, errors.New("browser could not load receipt images")
+	} else if failed != "" {
+		cancelAssets()
 		return Result{}, fmt.Errorf("image failed: %s", sanitizeURL(failed))
+	}
+	var brokenBackgrounds []string
+	if err := chromedp.Run(assetCtx, chromedp.Evaluate(cssImageValidationScript, &brokenBackgrounds, awaitPromise)); err != nil {
+		cancelAssets()
+		return Result{}, errors.New("browser could not validate receipt images")
+	}
+	cancelAssets()
+	if len(brokenBackgrounds) > 0 {
+		return Result{}, fmt.Errorf("image failed: %s", sanitizeURL(brokenBackgrounds[0]))
 	}
 
 	var brokenImages []string
@@ -98,7 +118,7 @@ func Render(ctx context.Context, executable, htmlPath string) (Result, error) {
 		Width  float64 `json:"width"`
 		Height float64 `json:"height"`
 	}
-	if err := chromedp.Run(renderCtx,
+	if err := chromedp.Run(browserCtx,
 		chromedp.Evaluate(`Array.from(document.images).filter(img => !img.complete || img.naturalWidth <= 0).map(img => img.currentSrc || img.src)`, &brokenImages),
 		chromedp.Evaluate(`({width: document.documentElement.scrollWidth, height: document.documentElement.scrollHeight})`, &dimensions),
 		chromedp.ActionFunc(func(ctx context.Context) error {
@@ -122,7 +142,7 @@ func Render(ctx context.Context, executable, htmlPath string) (Result, error) {
 	}
 
 	var pdf []byte
-	if err := chromedp.Run(renderCtx, chromedp.ActionFunc(func(ctx context.Context) error {
+	if err := chromedp.Run(browserCtx, chromedp.ActionFunc(func(ctx context.Context) error {
 		var err error
 		pdf, _, err = page.PrintToPDF().
 			WithLandscape(false).
@@ -150,11 +170,13 @@ func (s *imageState) listen(event any) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	changed := false
 	switch event := event.(type) {
 	case *network.EventRequestWillBeSent:
 		if event.Type == network.ResourceTypeImage {
 			s.urls[event.RequestID] = event.Request.URL
 			s.pending[event.RequestID] = struct{}{}
+			changed = true
 		}
 	case *network.EventResponseReceived:
 		if event.Type == network.ResourceTypeImage {
@@ -162,6 +184,7 @@ func (s *imageState) listen(event any) {
 			if event.Response.Status < 200 || event.Response.Status >= 400 {
 				s.failure = event.Response.URL
 			}
+			changed = true
 		}
 	case *network.EventLoadingFailed:
 		if event.Type == network.ResourceTypeImage {
@@ -169,11 +192,16 @@ func (s *imageState) listen(event any) {
 				s.failure = s.urls[event.RequestID]
 			}
 			delete(s.pending, event.RequestID)
+			changed = true
 		}
 	case *network.EventLoadingFinished:
 		if _, ok := s.pending[event.RequestID]; ok {
 			delete(s.pending, event.RequestID)
+			changed = true
 		}
+	}
+	if !changed {
+		return
 	}
 	select {
 	case s.changed <- struct{}{}:
@@ -181,19 +209,34 @@ func (s *imageState) listen(event any) {
 	}
 }
 
-func (s *imageState) wait(ctx context.Context) string {
+func (s *imageState) wait(ctx context.Context, quiet time.Duration) (string, error) {
+	quietSince := time.Now()
 	for {
 		s.mu.Lock()
-		if s.failure != "" || len(s.pending) == 0 {
+		if s.failure != "" {
 			failure := s.failure
 			s.mu.Unlock()
-			return failure
+			return failure, nil
 		}
+		idle := len(s.pending) == 0
 		s.mu.Unlock()
+		if idle && time.Since(quietSince) >= quiet {
+			return "", nil
+		}
+
+		wait := quiet - time.Since(quietSince)
+		if wait <= 0 || !idle {
+			wait = quiet
+		}
+		timer := time.NewTimer(wait)
 		select {
 		case <-ctx.Done():
-			return s.failedOrPending()
+			timer.Stop()
+			return s.failedOrPending(), ctx.Err()
 		case <-s.changed:
+			timer.Stop()
+			quietSince = time.Now()
+		case <-timer.C:
 		}
 	}
 }
@@ -220,3 +263,34 @@ func sanitizeURL(raw string) string {
 	}
 	return parsed.Host + parsed.EscapedPath()
 }
+
+func awaitPromise(params *runtime.EvaluateParams) *runtime.EvaluateParams {
+	return params.WithAwaitPromise(true)
+}
+
+const cssImageValidationScript = `(async () => {
+  const urls = new Set();
+  const addURLs = value => {
+    for (const match of value.matchAll(/url\((?:"([^"]*)"|'([^']*)'|([^)]*))\)/g)) {
+      const raw = (match[1] ?? match[2] ?? match[3] ?? '').trim();
+      if (raw) urls.add(new URL(raw, document.baseURI).href);
+    }
+  };
+  for (const element of document.querySelectorAll('*')) {
+    addURLs(getComputedStyle(element).backgroundImage);
+    addURLs(getComputedStyle(element, '::before').backgroundImage);
+    addURLs(getComputedStyle(element, '::after').backgroundImage);
+  }
+  const failed = [];
+  await Promise.all(Array.from(urls, async src => {
+    const image = new Image();
+    image.src = src;
+    try {
+      await image.decode();
+      if (image.naturalWidth <= 0 || image.naturalHeight <= 0) failed.push(src);
+    } catch (_) {
+      failed.push(src);
+    }
+  }));
+  return failed;
+})()`
