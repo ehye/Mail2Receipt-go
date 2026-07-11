@@ -145,14 +145,12 @@ func hasRemoteMetaRefresh(attrs []html.Attribute) bool {
 		return false
 	}
 	target := strings.TrimSpace(content[semicolon+1:])
-	if len(target) < 3 || !strings.EqualFold(target[:3], "url") {
-		return false
+	if len(target) >= 3 && strings.EqualFold(target[:3], "url") {
+		afterURL := strings.TrimSpace(target[3:])
+		if len(afterURL) > 0 && afterURL[0] == '=' {
+			target = strings.TrimSpace(afterURL[1:])
+		}
 	}
-	target = strings.TrimSpace(target[3:])
-	if len(target) == 0 || target[0] != '=' {
-		return false
-	}
-	target = strings.TrimSpace(target[1:])
 	if len(target) >= 2 && (target[0] == '\'' || target[0] == '"') && target[len(target)-1] == target[0] {
 		target = target[1 : len(target)-1]
 	}

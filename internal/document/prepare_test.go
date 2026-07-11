@@ -383,6 +383,35 @@ func TestPrepareNeutralizesRemoteMetaRefresh(t *testing.T) {
 	}
 }
 
+func TestPrepareNeutralizesDirectRemoteMetaRefreshTargets(t *testing.T) {
+	const input = `<html><head>
+<meta http-equiv="refresh" content="0; https://assets.example/direct">
+<meta http-equiv="refresh" content="1; 'HTTP://assets.example/quoted'">
+<meta http-equiv="refresh" content='2; "https://assets.example/double-quoted"'>
+<meta http-equiv="refresh" content="3; /local/receipt">
+<meta http-equiv="refresh" content="invalid refresh value">
+<meta http-equiv="refresh" content="4; url">
+</head><body></body></html>`
+
+	got, err := Prepare(message.Document{HTML: []byte(input)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(got)
+	if strings.Contains(text, "assets.example") {
+		t.Fatalf("prepared HTML retained direct remote meta refresh: %s", got)
+	}
+	for _, want := range []string{
+		`content="3; /local/receipt"`,
+		`content="invalid refresh value"`,
+		`content="4; url"`,
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("prepared HTML removed nonremote or invalid refresh %q: %s", want, got)
+		}
+	}
+}
+
 func TestPrepareNormalizesIframeSrcdocOffline(t *testing.T) {
 	nested := `<html><head><base href="https://assets.example/"><meta http-equiv="refresh" content="0;url=https://assets.example/next"><style>.remote { background:url(https://assets.example/bg.png) } .safe { color: navy }</style></head><body><img src="https://assets.example/remote.png"><img src="./google-play-crm-logo-transparent-w192px-h192px-2x.png"><p>safe nested text</p></body></html>`
 	input := `<html><head></head><body><iframe srcdoc="` + stdhtml.EscapeString(nested) + `"></iframe></body></html>`
