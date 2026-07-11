@@ -75,7 +75,7 @@ No proxy flag was added or overridden. The pinned `chromedp v0.14.2` `DefaultExe
 ### Loading Lifecycle
 
 - Keeps the CDP listener on the parent browser target context.
-- Uses a 15-second initial document/asset-load context.
+- Uses raw `Page.navigate`, allows up to 15 seconds for document parsing to finish or begin an image request, and starts the 15-second initial asset deadline when the first actual image request is observed.
 - After document load, uses a fresh 15-second delayed-asset/quiescence/decode context.
 - Requires 300 ms with no image request lifecycle activity and no pending image requests before validation proceeds.
 - Runs DOM image inspection, layout measurement, and `PrintToPDF` on the caller-controlled parent browser context, not an expiring asset context.
@@ -85,7 +85,7 @@ No proxy flag was added or overridden. The pinned `chromedp v0.14.2` `DefaultExe
 - Malformed HTTP 200 CSS background decoding and sanitized error reporting.
 - Empty HTTP 200 pseudo-element background decoding and sanitized error reporting.
 - Delayed `<img>` and CSS background requests, with an exact server request-count assertion proving rendering did not return early.
-- A successful image consuming 13 of the 15 asset-loading seconds, followed by PDF generation.
+- A successful image consuming 12 of the 15 asset-loading seconds, followed by PDF generation.
 - Content below the 0.50 scale minimum is rejected.
 - Content at the 0.50 fitting boundary is accepted.
 
@@ -111,7 +111,7 @@ TestRenderPrintsAfterNearDeadlineImage:
 Render() error = browser could not load receipt images
 ```
 
-It passed after separating the loading/decode contexts from inspection and printing. The fixture was set to a deterministic 13-second response delay after a 14-second delay proved vulnerable to local navigation/request startup consuming the remaining second.
+It passed after separating the loading/decode contexts from inspection and printing. The fixture was set to a deterministic 12-second response delay after 13- and 14-second delays proved vulnerable to local navigation/request startup consuming the remaining deadline.
 
 ### Fix Verification
 
@@ -122,6 +122,33 @@ go test ./internal/browser -run TestRender -v -timeout 150s
 go test ./internal/browser -run TestRenderPrintsAfterNearDeadlineImage -count=2 -v -timeout 45s
 go test ./... -timeout 150s
 go test -race ./internal/browser -run TestRender -timeout 180s
+go vet ./...
+git diff --check
+```
+
+### Post-Commit Timing Correction
+
+An uncached post-commit full run exposed that starting the initial asset timer before high-level navigation could intermittently consume the deadline in CDP/file-navigation setup rather than image transfer:
+
+```text
+TestRenderLoadsImagesAndProducesOnePagePDF/long_document_scales_below_initial_scale:
+Render() error = image failed: 127.0.0.1:<port>/image.png
+```
+
+The navigation flow now issues raw `Page.navigate`, listens for `Page.loadEventFired`, and starts the 15-second asset timer from `Network.requestWillBeSent` for the first image. This preserves the 16-second slow-image rejection while allowing the 12-second near-deadline image to complete independent of CDP setup latency.
+
+The focused timing regressions then passed twice each:
+
+```text
+go test ./internal/browser -run TestRenderPrintsAfterNearDeadlineImage -count=2 -v -timeout 45s
+go test ./internal/browser -run TestRenderRejectsFailedImagesWithoutLeakingQuery/slow -count=2 -v -timeout 50s
+```
+
+Fresh final verification after this correction passed:
+
+```text
+go test ./... -count=1 -timeout 180s
+go test -race ./internal/browser -run TestRender -count=1 -timeout 180s
 go vet ./...
 git diff --check
 ```

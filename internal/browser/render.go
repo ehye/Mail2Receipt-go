@@ -41,6 +41,7 @@ type imageState struct {
 	pending map[network.RequestID]struct{}
 	failure string
 	changed chan struct{}
+	started chan struct{}
 }
 
 // Render loads prepared HTML in an isolated installed browser and prints one A5 page.
@@ -74,23 +75,62 @@ func Render(ctx context.Context, executable, htmlPath string) (Result, error) {
 		urls:    make(map[network.RequestID]string),
 		pending: make(map[network.RequestID]struct{}),
 		changed: make(chan struct{}, 1),
+		started: make(chan struct{}, 1),
 	}
 	chromedp.ListenTarget(browserCtx, images.listen)
+	loadFinished := make(chan struct{}, 1)
+	chromedp.ListenTarget(browserCtx, func(event any) {
+		if _, ok := event.(*page.EventLoadEventFired); ok {
+			select {
+			case loadFinished <- struct{}{}:
+			default:
+			}
+		}
+	})
 
 	absPath, err := filepath.Abs(htmlPath)
 	if err != nil {
 		return Result{}, fmt.Errorf("resolve HTML path: %w", err)
 	}
 	pageURL := (&url.URL{Scheme: "file", Path: filepath.ToSlash(absPath)}).String()
-	loadCtx, cancelLoad := context.WithTimeout(browserCtx, 15*time.Second)
-	if err := chromedp.Run(loadCtx, network.Enable(), chromedp.Navigate(pageURL)); err != nil {
-		cancelLoad()
+	var navigationError string
+	if err := chromedp.Run(browserCtx,
+		network.Enable(),
+		page.Enable(),
+		chromedp.ActionFunc(func(ctx context.Context) error {
+			_, _, navigationError, _, err = page.Navigate(pageURL).Do(ctx)
+			return err
+		}),
+	); err != nil || navigationError != "" {
 		if failed := images.failedOrPending(); failed != "" {
 			return Result{}, fmt.Errorf("image failed: %s", sanitizeURL(failed))
 		}
 		return Result{}, errors.New("browser could not load receipt")
 	}
-	cancelLoad()
+	parseCtx, cancelParse := context.WithTimeout(browserCtx, 15*time.Second)
+	select {
+	case <-loadFinished:
+		cancelParse()
+	case <-images.started:
+		cancelParse()
+		loadCtx, cancelLoad := context.WithTimeout(browserCtx, 15*time.Second)
+		select {
+		case <-loadFinished:
+		case <-loadCtx.Done():
+			cancelLoad()
+			if failed := images.failedOrPending(); failed != "" {
+				return Result{}, fmt.Errorf("image failed: %s", sanitizeURL(failed))
+			}
+			return Result{}, errors.New("browser could not load receipt")
+		}
+		cancelLoad()
+	case <-parseCtx.Done():
+		cancelParse()
+		if failed := images.failedOrPending(); failed != "" {
+			return Result{}, fmt.Errorf("image failed: %s", sanitizeURL(failed))
+		}
+		return Result{}, errors.New("browser could not load receipt")
+	}
 
 	assetCtx, cancelAssets := context.WithTimeout(browserCtx, 15*time.Second)
 	if failed, err := images.wait(assetCtx, networkQuiet); err != nil {
@@ -176,6 +216,10 @@ func (s *imageState) listen(event any) {
 		if event.Type == network.ResourceTypeImage {
 			s.urls[event.RequestID] = event.Request.URL
 			s.pending[event.RequestID] = struct{}{}
+			select {
+			case s.started <- struct{}{}:
+			default:
+			}
 			changed = true
 		}
 	case *network.EventResponseReceived:

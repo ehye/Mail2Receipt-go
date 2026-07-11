@@ -196,7 +196,7 @@ func TestRenderPrintsAfterNearDeadlineImage(t *testing.T) {
 	}
 	executable := testBrowser(t)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		time.Sleep(13 * time.Second)
+		time.Sleep(12 * time.Second)
 		servePNG(w, r)
 	}))
 	t.Cleanup(server.Close)
