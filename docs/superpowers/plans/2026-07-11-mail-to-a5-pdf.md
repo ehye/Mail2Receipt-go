@@ -194,7 +194,7 @@ Create a temporary browser profile and pass `--headless=new`, `--disable-gpu`, `
 
 - [ ] **Step 4: Implement measurement and printing**
 
-Measure `document.documentElement.scrollWidth/scrollHeight` after network idle. Compute the largest scale at or below 0.79 that fits the 132 x 194 mm printable area, clamp only when the computed value is at least 0.50, and otherwise return `content cannot fit one A5 page`. Call `page.PrintToPDF` with 5.826772 x 8.267717 inches, zero CDP margins because CSS owns the 8 mm margin, backgrounds enabled, headers/footers disabled, and the selected scale.
+Measure `document.documentElement.scrollWidth/scrollHeight` after navigation. Compute the largest scale at or below 0.79 that fits the 132 x 194 mm printable area, clamp only when the computed value is at least 0.50, and otherwise return `content cannot fit one A5 page`. Call `page.PrintToPDF` with 5.826772 x 8.267717 inches, zero CDP margins because CSS owns the 8 mm margin, backgrounds enabled, headers/footers disabled, and the selected scale.
 
 - [ ] **Step 5: Run renderer tests**
 
