@@ -93,3 +93,85 @@ exit 0; only Git LF-to-CRLF working-copy warnings, no whitespace errors
 - Behavior: user-visible receipt text is not rewritten. Navigation targets explicitly required by the design remain present.
 - Browser: installed-browser runs exercised intermediate fitting and both real embedded logo assets; both produced exactly one PDF page.
 - Scope: `receipt.eml`, `receipt.html`, `receipt.pdf`, and `docs/superpowers/plans/2026-07-11-offline-receipt-assets.md` remain untracked and untouched.
+
+## Remaining Findings Fix Wave
+
+Implementation commit: `07e78b298ff52e6a500f9647184d758e03e4bc1d`
+
+### RED Evidence
+
+CSS string-resource regression command:
+
+```text
+go test -count=1 ./internal/document -run TestPrepareFiltersImageSetStringResources -v
+```
+
+Result: exit 1 as expected. Safe data string, safe data `url()`, and safe vendor-function cases passed, while file, UNC, relative, protocol-relative, HTTP(S), mixed safe/unsafe, escaped function, and escaped scheme cases all failed because their declarations remained.
+
+Embedded-logo integration command:
+
+```text
+go test -count=1 ./internal/browser -run TestRenderPreparedEmbeddedLogosOffline -v
+```
+
+Result: build failed as expected with `undefined: renderWithInspection`, proving the requested browser-observed dimension assertion required a new test seam.
+
+Self-review boundary regression command:
+
+```text
+go test -count=1 ./internal/document -run 'TestPrepareFiltersImageSetStringResources/unrelated_function_suffix' -v
+```
+
+Result: exit 1 as expected because the first matcher incorrectly treated `my-image-set()` as the standard function.
+
+### GREEN Evidence
+
+Focused CSS command:
+
+```text
+go test -count=1 ./internal/document -run TestPrepareFiltersImageSetStringResources -v
+PASS
+ok mail2receipt/internal/document 1.021s
+```
+
+All 14 cases passed: safe string candidates with `type()` descriptors, safe `url()` candidates, vendor syntax, unrelated function suffixes, file/UNC/relative/protocol-relative/HTTP strings, unsafe `url()`, mixed candidates, and escaped functions/schemes.
+
+Focused embedded-logo command:
+
+```text
+go test -count=1 ./internal/browser -run TestRenderPreparedEmbeddedLogosOffline -v
+PASS
+ok mail2receipt/internal/browser 2.866s
+```
+
+The installed browser reported both exact prepared images complete with positive natural width, natural height, rendered width, and rendered height. The same test retained zero HTTP request and exactly-one-page PDF assertions.
+
+Required final verification after self-review changes:
+
+```text
+go test -count=1 ./...
+ok mail2receipt/internal/browser 6.693s
+ok mail2receipt/internal/document 0.584s
+ok mail2receipt/internal/message 0.928s
+
+go test -race ./internal/document ./internal/browser
+ok mail2receipt/internal/document 2.490s
+ok mail2receipt/internal/browser 8.688s
+
+go vet ./...
+exit 0, no output
+
+git diff --check
+exit 0; only Git LF-to-CRLF working-copy warnings, no whitespace errors
+```
+
+### Decisions And Self-Review
+
+- `image-set()` and `-webkit-image-set()` are classified after CSS escape decoding. Every leading string candidate must be an image data URL; decoded `url()` candidates remain covered by the existing URL classifier.
+- Candidate descriptors such as `type("image/png")` are not mistaken for resource strings, and safe non-resource CSS remains unchanged.
+- Function-token boundaries prevent suffix matches in unrelated identifiers such as `my-image-set()`.
+- Other Chromium CSS image functions were considered. Their load-bearing arguments use `<image>`/`url()` rather than the bare `<string>` source syntax specific to image-set, so the existing decoded URL scan covers them without broad string filtering.
+- The package-private inspection seam runs an optional CDP action after offline navigation and before measurement/printing. Public `Render` always passes `nil`, so production behavior and unrelated failed-image handling are unchanged.
+- The logo integration passes HTML through `document.Prepare`, uses both exact approved filenames and actual embedded PNG bytes, then verifies browser decoding/rendering, zero HTTP requests, and one PDF page.
+- No production error includes a rejected CSS resource or sensitive path.
+- Untracked receipt fixtures and the pre-existing untracked plan were not staged or modified.
