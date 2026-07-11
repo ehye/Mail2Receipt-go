@@ -5,8 +5,8 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
-	"net/url"
 	"regexp"
+	"strconv"
 	"strings"
 	"unicode"
 
@@ -40,26 +40,28 @@ func prepareHTML(source []byte, assets map[string]message.Asset, srcdocDepth int
 	var walk func(*html.Node) error
 	walk = func(node *html.Node) error {
 		if node.Type == html.ElementNode {
+			if node.Data == "base" {
+				node.Parent.RemoveChild(node)
+				return nil
+			}
 			if node.Data == "head" {
 				head = node
 			}
 			attrs := node.Attr[:0]
-			remoteRefresh := node.Data == "meta" && hasRemoteMetaRefresh(node.Attr)
+			refreshTarget := node.Data == "meta" && hasMetaRefreshTarget(node.Attr)
 			for _, attr := range node.Attr {
 				keep := true
 				switch strings.ToLower(attr.Key) {
 				case "data":
-					if node.Data == "object" && isRemoteHTTPURL(attr.Val) {
-						keep = false
+					if node.Data == "object" {
+						attr.Val, keep, err = normalizeImageReference(attr.Val, assets)
 					}
 				case "href":
-					if isResourceHrefElement(node.Data) && isRemoteHTTPURL(attr.Val) {
-						keep = false
+					if node.Data != "a" && node.Data != "area" {
+						attr.Val, keep, err = normalizeImageReference(attr.Val, assets)
 					}
 				case "poster":
-					if isRemoteHTTPURL(attr.Val) {
-						keep = false
-					}
+					attr.Val, keep, err = normalizeImageReference(attr.Val, assets)
 				case "src", "background":
 					attr.Val, keep, err = normalizeImageReference(attr.Val, assets)
 				case "srcdoc":
@@ -79,7 +81,7 @@ func prepareHTML(source []byte, assets map[string]message.Asset, srcdocDepth int
 					attr.Val, err = normalizeDeclarations(attr.Val, assets)
 					keep = strings.TrimSpace(attr.Val) != ""
 				case "content":
-					if remoteRefresh {
+					if refreshTarget {
 						keep = false
 					}
 				}
@@ -102,10 +104,12 @@ func prepareHTML(source []byte, assets map[string]message.Asset, srcdocDepth int
 				}
 			}
 		}
-		for child := node.FirstChild; child != nil; child = child.NextSibling {
+		for child := node.FirstChild; child != nil; {
+			next := child.NextSibling
 			if err := walk(child); err != nil {
 				return err
 			}
+			child = next
 		}
 		return nil
 	}
@@ -126,7 +130,7 @@ func prepareHTML(source []byte, assets map[string]message.Asset, srcdocDepth int
 	return output.Bytes(), nil
 }
 
-func hasRemoteMetaRefresh(attrs []html.Attribute) bool {
+func hasMetaRefreshTarget(attrs []html.Attribute) bool {
 	var refresh bool
 	var content string
 	for _, attr := range attrs {
@@ -154,16 +158,7 @@ func hasRemoteMetaRefresh(attrs []html.Attribute) bool {
 	if len(target) >= 2 && (target[0] == '\'' || target[0] == '"') && target[len(target)-1] == target[0] {
 		target = target[1 : len(target)-1]
 	}
-	return isRemoteHTTPURL(target)
-}
-
-func isResourceHrefElement(name string) bool {
-	switch name {
-	case "base", "image", "link", "use":
-		return true
-	default:
-		return false
-	}
+	return strings.TrimSpace(target) != ""
 }
 
 func replaceCID(value string, assets map[string]message.Asset) (string, error) {
@@ -204,15 +199,14 @@ func normalizeImageReference(value string, assets map[string]message.Asset) (str
 	if logo, ok := embeddedLogo(value); ok {
 		return logo, true, nil
 	}
-	if isRemoteHTTPURL(value) {
-		return "", false, nil
+	if isImageDataURL(value) {
+		return value, true, nil
 	}
-	return value, true, nil
+	return "", false, nil
 }
 
-func isRemoteHTTPURL(value string) bool {
-	parsed, err := url.Parse(strings.TrimSpace(value))
-	return err == nil && (strings.EqualFold(parsed.Scheme, "http") || strings.EqualFold(parsed.Scheme, "https"))
+func isImageDataURL(value string) bool {
+	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(value)), "data:image/")
 }
 
 func normalizeSrcset(value string, assets map[string]message.Asset) (string, error) {
@@ -300,11 +294,12 @@ func replaceStyleURLs(value string, assets map[string]message.Asset) (string, er
 	return replaced, replaceErr
 }
 
-func containsRemoteCSSURL(value string) bool {
-	for _, match := range cssURLPattern.FindAllString(value, -1) {
+func containsNonEmbeddedCSSURL(value string) bool {
+	decoded := decodeCSSEscapes(value)
+	for _, match := range cssURLPattern.FindAllString(decoded, -1) {
 		open := strings.IndexByte(match, '(')
 		inner := strings.Trim(strings.TrimSpace(match[open+1:len(match)-1]), "'\"")
-		if isRemoteHTTPURL(inner) {
+		if !isImageDataURL(inner) {
 			return true
 		}
 	}
@@ -317,7 +312,7 @@ func keepDeclaration(property, value string) bool {
 	if property != "color" && strings.Contains(lowerValue, "#ededed") {
 		return false
 	}
-	return !containsRemoteCSSURL(value)
+	return !containsNonEmbeddedCSSURL(value)
 }
 
 func normalizeDeclarations(value string, assets map[string]message.Asset) (string, error) {
@@ -330,7 +325,7 @@ func normalizeDeclarations(value string, assets map[string]message.Asset) (strin
 	for _, declaration := range parts {
 		colon := indexCSS(declaration, ':')
 		if colon < 0 {
-			if !containsRemoteCSSURL(declaration) {
+			if !containsNonEmbeddedCSSURL(declaration) {
 				kept = append(kept, declaration)
 			}
 			continue
@@ -528,23 +523,56 @@ func removeRemoteImports(value string) string {
 
 func isRemoteImport(value string) bool {
 	trimmed := trimCSSSpaceAndComments(value)
-	if len(trimmed) < len("@import") || !strings.EqualFold(trimmed[:len("@import")], "@import") {
+	decoded := decodeCSSEscapes(trimmed)
+	if len(decoded) < len("@import") || !strings.EqualFold(decoded[:len("@import")], "@import") {
 		return false
 	}
-	reference := trimCSSSpaceAndComments(trimmed[len("@import"):])
-	if containsRemoteCSSURL(reference) {
-		return true
-	}
-	if len(reference) == 0 || (reference[0] != '\'' && reference[0] != '"') {
-		return false
-	}
-	quote := reference[0]
-	for i := 1; i < len(reference); i++ {
-		if reference[i] == quote && !isEscaped(reference, i) {
-			return isRemoteHTTPURL(reference[1:i])
+	return true
+}
+
+func decodeCSSEscapes(value string) string {
+	var output strings.Builder
+	for pos := 0; pos < len(value); {
+		if value[pos] != '\\' || pos+1 >= len(value) {
+			output.WriteByte(value[pos])
+			pos++
+			continue
 		}
+		pos++
+		if value[pos] == '\n' || value[pos] == '\f' {
+			pos++
+			continue
+		}
+		if value[pos] == '\r' {
+			pos++
+			if pos < len(value) && value[pos] == '\n' {
+				pos++
+			}
+			continue
+		}
+		start := pos
+		for pos < len(value) && pos-start < 6 && isHex(value[pos]) {
+			pos++
+		}
+		if start != pos {
+			code, _ := strconv.ParseInt(value[start:pos], 16, 32)
+			if code == 0 || code > unicode.MaxRune || code >= 0xD800 && code <= 0xDFFF {
+				code = unicode.ReplacementChar
+			}
+			output.WriteRune(rune(code))
+			if pos < len(value) && isASCIISpace(value[pos]) {
+				pos++
+			}
+			continue
+		}
+		output.WriteByte(value[pos])
+		pos++
 	}
-	return false
+	return output.String()
+}
+
+func isHex(value byte) bool {
+	return value >= '0' && value <= '9' || value >= 'a' && value <= 'f' || value >= 'A' && value <= 'F'
 }
 
 func trimCSSSpaceAndComments(value string) string {

@@ -158,6 +158,72 @@ func TestPrepareEmbedsKnownLogosAndRemovesRemoteImages(t *testing.T) {
 	}
 }
 
+func TestPrepareRemovesAllNonEmbeddedResources(t *testing.T) {
+	const input = `<html><head>
+<base href="C:\private\receipts\">
+<link rel="stylesheet" href="//files.example/receipt.css">
+<link rel="icon" href="file:///C:/private/icon.png">
+<style>@import "local.css"; .local { background:url(../private/tile.png) }</style>
+</head><body background="\\server\share\body.png">
+<img src="C:\private\logo.png" srcset="/root/image.png 1x, cid:safe@id 2x">
+<object data="../private/object.bin"></object><video poster="//files.example/poster.png"></video>
+<svg><image href="file:///C:/private/vector.png"></image><use href="sprite.svg#icon"></use></svg>
+<div style="background:url(file:///C:/private/tile.png)"></div>
+<a href="file:///C:/navigation">link</a><area href="//example.com/map"><form action="relative-submit"></form>
+<img src="https://example.com/google-play-crm-logo-transparent-w192px-h192px-2x.png">
+</body></html>`
+
+	got, err := Prepare(message.Document{
+		HTML: []byte(input),
+		CID:  map[string]message.Asset{"safe@id": {MediaType: "image/gif", Data: []byte{1}}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(got)
+	for _, unsafe := range []string{"<base", "files.example", "private", "local.css", "sprite.svg", "root/image.png"} {
+		if strings.Contains(strings.ToLower(text), strings.ToLower(unsafe)) {
+			t.Errorf("prepared HTML retained non-embedded resource marker %q", unsafe)
+		}
+	}
+	for _, safe := range []string{
+		"data:image/gif;base64,AQ== 2x",
+		"data:image/png;base64,",
+		`href="file:///C:/navigation"`,
+		`href="//example.com/map"`,
+		`action="relative-submit"`,
+	} {
+		if !strings.Contains(text, safe) {
+			t.Errorf("prepared HTML does not contain safe value %q", safe)
+		}
+	}
+}
+
+func TestPrepareDecodesCSSResourceEscapes(t *testing.T) {
+	const input = `<html><head><style>
+.escaped-identifier { background: u\72l(local.png) }
+.escaped-scheme { background: url(h\74tps://assets.example/image.png) }
+@import u\72l(\\server\share\receipt.css);
+.safe { background:url(data:image/png;base64,AQID); color: navy }
+</style></head><body style="background:u\72l(file:///C:/private/tile.png);color:green"></body></html>`
+
+	got, err := Prepare(message.Document{HTML: []byte(input)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(got)
+	for _, unsafe := range []string{`u\72l`, `h\74tps`, "assets.example", "local.png", "server", "private"} {
+		if strings.Contains(strings.ToLower(text), strings.ToLower(unsafe)) {
+			t.Errorf("prepared HTML retained escaped resource marker %q", unsafe)
+		}
+	}
+	for _, safe := range []string{"data:image/png;base64,AQID", "color: navy", "color:green"} {
+		if !strings.Contains(text, safe) {
+			t.Errorf("prepared HTML removed safe CSS %q", safe)
+		}
+	}
+}
+
 func TestPrepareNormalizesOfflineImageReferences(t *testing.T) {
 	doc := message.Document{
 		HTML: []byte(`<html><head><style>
@@ -214,7 +280,7 @@ func TestPrepareRemovesRemoteLinkResourcesButPreservesHyperlinks(t *testing.T) {
 	}
 }
 
-func TestPrepareRemovesRemoteCSSImports(t *testing.T) {
+func TestPrepareRemovesCSSImports(t *testing.T) {
 	const input = `<html><head><style>
 /* lead comment */ @import "https://assets.example/quoted.css" screen;
 @import url('HTTP://assets.example/url.css');
@@ -230,7 +296,7 @@ func TestPrepareRemovesRemoteCSSImports(t *testing.T) {
 	if strings.Contains(text, "assets.example") {
 		t.Fatalf("prepared HTML retained remote CSS import: %s", got)
 	}
-	for _, want := range []string{`@import "local.css"`, `color: green`} {
+	for _, want := range []string{`color: green`} {
 		if !strings.Contains(text, want) {
 			t.Errorf("prepared HTML removed nonremote CSS %q: %s", want, got)
 		}
@@ -296,7 +362,7 @@ func TestPrepareNormalizesUnclosedStylesheetBlock(t *testing.T) {
 	}
 }
 
-func TestPrepareRemovesRemoteBaseAndPreservesNonremoteBase(t *testing.T) {
+func TestPrepareRemovesAllBaseElements(t *testing.T) {
 	const input = `<html><head><base id="remote" href="https://assets.example/receipts/"><base id="local" href="/receipts/"></head><body><img src="relative.png"></body></html>`
 
 	got, err := Prepare(message.Document{HTML: []byte(input)})
@@ -307,8 +373,8 @@ func TestPrepareRemovesRemoteBaseAndPreservesNonremoteBase(t *testing.T) {
 	if strings.Contains(text, "assets.example") {
 		t.Fatalf("prepared HTML retained remote base URL: %s", got)
 	}
-	if !strings.Contains(text, `id="local" href="/receipts/"`) {
-		t.Fatalf("prepared HTML removed nonremote base URL: %s", got)
+	if strings.Contains(text, `<base`) {
+		t.Fatalf("prepared HTML retained a base element: %s", got)
 	}
 }
 
@@ -376,7 +442,7 @@ func TestPrepareNeutralizesRemoteMetaRefresh(t *testing.T) {
 	if strings.Contains(text, "assets.example") {
 		t.Fatalf("prepared HTML retained remote meta refresh: %s", got)
 	}
-	for _, want := range []string{`name="description" content="safe receipt"`, `content="10; url=/local/receipt"`} {
+	for _, want := range []string{`name="description" content="safe receipt"`} {
 		if !strings.Contains(text, want) {
 			t.Errorf("prepared HTML removed harmless meta content %q: %s", want, got)
 		}
@@ -402,9 +468,7 @@ func TestPrepareNeutralizesDirectRemoteMetaRefreshTargets(t *testing.T) {
 		t.Fatalf("prepared HTML retained direct remote meta refresh: %s", got)
 	}
 	for _, want := range []string{
-		`content="3; /local/receipt"`,
 		`content="invalid refresh value"`,
-		`content="4; url"`,
 	} {
 		if !strings.Contains(text, want) {
 			t.Errorf("prepared HTML removed nonremote or invalid refresh %q: %s", want, got)
@@ -473,13 +537,13 @@ html, body { margin: 0; padding: 0; }`
 	}
 }
 
-func TestPrepareLeavesMalformedCIDTextUnchanged(t *testing.T) {
+func TestPrepareRemovesMalformedCIDResources(t *testing.T) {
 	const input = `<html><head></head><body><img src="cid:"><div style="background:url('cid:bad id')"></div></body></html>`
 	got, err := Prepare(message.Document{HTML: []byte(input)})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !bytes.Contains(got, []byte(`src="cid:"`)) || !bytes.Contains(got, []byte(`cid:bad id`)) {
-		t.Fatalf("malformed CID text was changed: %s", got)
+	if bytes.Contains(got, []byte(`cid:`)) {
+		t.Fatalf("malformed CID resource was retained: %s", got)
 	}
 }

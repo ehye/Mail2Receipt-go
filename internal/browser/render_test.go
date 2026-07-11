@@ -11,6 +11,9 @@ import (
 	"path/filepath"
 	"sync/atomic"
 	"testing"
+
+	"mail2receipt/internal/document"
+	"mail2receipt/internal/message"
 )
 
 func TestRenderBlocksRemoteRequestsAndProducesOnePagePDF(t *testing.T) {
@@ -58,6 +61,45 @@ func TestRenderRejectsScaleBelowMinimum(t *testing.T) {
 	}
 }
 
+func TestRenderLongDocumentUsesIntermediateScale(t *testing.T) {
+	executable := testBrowser(t)
+	result, err := Render(context.Background(), executable, writeHTML(t, `<div style="height:1000px;width:400px">long receipt</div>`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Scale <= minScale || result.Scale >= maxScale {
+		t.Fatalf("Render() scale = %v, want %v < scale < %v", result.Scale, minScale, maxScale)
+	}
+}
+
+func TestRenderPreparedEmbeddedLogosOffline(t *testing.T) {
+	executable := testBrowser(t)
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		http.Error(w, "unexpected request", http.StatusInternalServerError)
+	}))
+	defer server.Close()
+
+	prepared, err := document.Prepare(message.Document{HTML: []byte(fmt.Sprintf(`<html><head></head><body>
+<img src="%s/google-play-crm-lockup-ic-h-transparent-w688px-h140px-2x.png">
+<img src="%s/google-play-crm-logo-transparent-w192px-h192px-2x.png">
+</body></html>`, server.URL, server.URL))})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := Render(context.Background(), executable, writePreparedHTML(t, prepared))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := requests.Load(); got != 0 {
+		t.Fatalf("remote requests = %d, want 0", got)
+	}
+	if !bytes.HasPrefix(result.PDF, []byte("%PDF-")) || len(pdfPagePattern.FindAll(result.PDF, -1)) != 1 {
+		t.Fatal("prepared embedded logos did not produce a one-page PDF")
+	}
+}
+
 func TestScaleToFitAcceptsExactMinimumBoundary(t *testing.T) {
 	scale, err := scaleToFit(printableWidth/minScale, printableHeight/minScale)
 	if err != nil {
@@ -90,6 +132,15 @@ func writeHTML(t *testing.T, body string) string {
 	path := filepath.Join(t.TempDir(), "receipt.html")
 	html := `<!doctype html><html><head><meta charset="utf-8"><style>html,body{margin:0;padding:0}</style></head><body>` + body + `</body></html>`
 	if err := os.WriteFile(path, []byte(html), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func writePreparedHTML(t *testing.T, prepared []byte) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "receipt.html")
+	if err := os.WriteFile(path, prepared, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	return path
