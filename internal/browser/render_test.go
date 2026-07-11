@@ -12,6 +12,8 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/chromedp/chromedp"
+
 	"mail2receipt/internal/document"
 	"mail2receipt/internal/message"
 )
@@ -82,15 +84,35 @@ func TestRenderPreparedEmbeddedLogosOffline(t *testing.T) {
 	defer server.Close()
 
 	prepared, err := document.Prepare(message.Document{HTML: []byte(fmt.Sprintf(`<html><head></head><body>
-<img src="%s/google-play-crm-lockup-ic-h-transparent-w688px-h140px-2x.png">
-<img src="%s/google-play-crm-logo-transparent-w192px-h192px-2x.png">
+<img id="lockup" src="%s/google-play-crm-lockup-ic-h-transparent-w688px-h140px-2x.png">
+<img id="logo" src="%s/google-play-crm-logo-transparent-w192px-h192px-2x.png">
 </body></html>`, server.URL, server.URL))})
 	if err != nil {
 		t.Fatal(err)
 	}
-	result, err := Render(context.Background(), executable, writePreparedHTML(t, prepared))
+	var images []struct {
+		ID            string  `json:"id"`
+		Complete      bool    `json:"complete"`
+		NaturalWidth  int64   `json:"naturalWidth"`
+		NaturalHeight int64   `json:"naturalHeight"`
+		Width         float64 `json:"width"`
+		Height        float64 `json:"height"`
+	}
+	result, err := renderWithInspection(context.Background(), executable, writePreparedHTML(t, prepared), chromedp.Evaluate(`
+Array.from(document.querySelectorAll('#lockup, #logo')).map(image => {
+  const rect = image.getBoundingClientRect();
+  return {id: image.id, complete: image.complete, naturalWidth: image.naturalWidth, naturalHeight: image.naturalHeight, width: rect.width, height: rect.height};
+})`, &images))
 	if err != nil {
 		t.Fatal(err)
+	}
+	if len(images) != 2 {
+		t.Fatalf("inspected images = %d, want 2", len(images))
+	}
+	for _, image := range images {
+		if !image.Complete || image.NaturalWidth <= 0 || image.NaturalHeight <= 0 || image.Width <= 0 || image.Height <= 0 {
+			t.Errorf("embedded image %q did not decode and render: %+v", image.ID, image)
+		}
 	}
 	if got := requests.Load(); got != 0 {
 		t.Fatalf("remote requests = %d, want 0", got)

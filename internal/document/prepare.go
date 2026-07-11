@@ -21,9 +21,10 @@ html, body { margin: 0; padding: 0; }`
 const maxSrcdocDepth = 4
 
 var (
-	ErrMissingCID  = errors.New("referenced CID is missing")
-	ErrNonImageCID = errors.New("referenced CID is not an image")
-	cssURLPattern  = regexp.MustCompile(`(?i)url\(\s*(?:"[^"]*"|'[^']*'|[^)]*)\s*\)`)
+	ErrMissingCID   = errors.New("referenced CID is missing")
+	ErrNonImageCID  = errors.New("referenced CID is not an image")
+	cssURLPattern   = regexp.MustCompile(`(?i)url\(\s*(?:"[^"]*"|'[^']*'|[^)]*)\s*\)`)
+	imageSetPattern = regexp.MustCompile(`(?i)(?:-webkit-)?image-set\s*\(`)
 )
 
 func Prepare(doc message.Document) ([]byte, error) {
@@ -303,7 +304,78 @@ func containsNonEmbeddedCSSURL(value string) bool {
 			return true
 		}
 	}
+	return containsNonEmbeddedImageSetString(decoded)
+}
+
+func containsNonEmbeddedImageSetString(value string) bool {
+	for _, location := range imageSetPattern.FindAllStringIndex(value, -1) {
+		if location[0] > 0 && isCSSIdentifierByte(value[location[0]-1]) {
+			continue
+		}
+		open := location[1] - 1
+		close := matchingCSSParen(value, open)
+		if close < 0 {
+			return true
+		}
+		for _, candidate := range splitCSS(value[open+1:close], ',') {
+			candidate = trimCSSSpaceAndComments(candidate)
+			if len(candidate) == 0 || candidate[0] != '\'' && candidate[0] != '"' {
+				continue
+			}
+			quote := candidate[0]
+			end := 1
+			for end < len(candidate) && candidate[end] != quote {
+				end++
+			}
+			if end == len(candidate) || !isImageDataURL(candidate[1:end]) {
+				return true
+			}
+		}
+	}
 	return false
+}
+
+func isCSSIdentifierByte(value byte) bool {
+	return value == '-' || value == '_' || value >= '0' && value <= '9' || value >= 'a' && value <= 'z' || value >= 'A' && value <= 'Z' || value >= 0x80
+}
+
+func matchingCSSParen(value string, open int) int {
+	depth := 0
+	quote := byte(0)
+	inComment := false
+	for pos := open; pos < len(value); pos++ {
+		char := value[pos]
+		if inComment {
+			if char == '*' && pos+1 < len(value) && value[pos+1] == '/' {
+				inComment = false
+				pos++
+			}
+			continue
+		}
+		if quote != 0 {
+			if char == quote && !isEscaped(value, pos) {
+				quote = 0
+			}
+			continue
+		}
+		switch char {
+		case '\'', '"':
+			quote = char
+		case '/':
+			if pos+1 < len(value) && value[pos+1] == '*' {
+				inComment = true
+				pos++
+			}
+		case '(':
+			depth++
+		case ')':
+			depth--
+			if depth == 0 {
+				return pos
+			}
+		}
+	}
+	return -1
 }
 
 func keepDeclaration(property, value string) bool {

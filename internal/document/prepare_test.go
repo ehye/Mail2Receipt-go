@@ -224,6 +224,49 @@ func TestPrepareDecodesCSSResourceEscapes(t *testing.T) {
 	}
 }
 
+func TestPrepareFiltersImageSetStringResources(t *testing.T) {
+	tests := []struct {
+		name  string
+		value string
+		keep  bool
+	}{
+		{name: "safe strings", value: `image-set("data:image/png;base64,AQID" type("image/png") 1x, 'data:image/webp;base64,BAUG' 2x)`, keep: true},
+		{name: "safe URL entries", value: `image-set(url("data:image/png;base64,AQID") 1x, url(data:image/webp;base64,BAUG) 2x)`, keep: true},
+		{name: "safe vendor function", value: `-webkit-image-set("data:image/png;base64,AQID" 1x)`, keep: true},
+		{name: "unrelated function suffix", value: `my-image-set("safe string")`, keep: true},
+		{name: "file", value: `image-set("file:///C:/private/image.png" 1x)`, keep: false},
+		{name: "UNC", value: `image-set("\\server\share\image.png" 1x)`, keep: false},
+		{name: "relative", value: `image-set("../private/image.png" 1x)`, keep: false},
+		{name: "protocol relative", value: `image-set("//images.example/image.png" 1x)`, keep: false},
+		{name: "HTTP", value: `image-set("https://images.example/image.png" 1x)`, keep: false},
+		{name: "unsafe URL entry", value: `image-set(url("file:///C:/private/image.png") 1x)`, keep: false},
+		{name: "mixed", value: `image-set("data:image/png;base64,AQID" 1x, "local.png" 2x)`, keep: false},
+		{name: "escaped function", value: `image-s\65t("local.png" 1x)`, keep: false},
+		{name: "escaped vendor function and scheme", value: `-webkit-image-s\65t("f\69le:///C:/private/image.png" 1x)`, keep: false},
+		{name: "escaped HTTP scheme", value: `image-set("h\74tps://images.example/image.png" 1x)`, keep: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			input := `<html><head><style>.receipt { background-image:` + tt.value + `; color: navy }</style></head>` +
+				`<body style="background-image:` + tt.value + `;color:green"><p style="content:'safe string';font-family:'Receipt Sans'">text</p></body></html>`
+			got, err := Prepare(message.Document{HTML: []byte(input)})
+			if err != nil {
+				t.Fatal(err)
+			}
+			text := string(got)
+			if retained := strings.Contains(text, "background-image"); retained != tt.keep {
+				t.Errorf("background-image retained = %v, want %v", retained, tt.keep)
+			}
+			for _, safe := range []string{"color: navy", "color:green", "safe string", "Receipt Sans"} {
+				if !strings.Contains(text, safe) {
+					t.Errorf("safe non-resource CSS %q was removed", safe)
+				}
+			}
+		})
+	}
+}
+
 func TestPrepareNormalizesOfflineImageReferences(t *testing.T) {
 	doc := message.Document{
 		HTML: []byte(`<html><head><style>

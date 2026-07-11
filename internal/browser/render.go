@@ -34,6 +34,10 @@ type Result struct {
 
 // Render loads prepared HTML in an isolated installed browser and prints one A5 page.
 func Render(ctx context.Context, executable, htmlPath string) (Result, error) {
+	return renderWithInspection(ctx, executable, htmlPath, nil)
+}
+
+func renderWithInspection(ctx context.Context, executable, htmlPath string, inspection chromedp.Action) (Result, error) {
 	profile, err := os.MkdirTemp("", "mail2receipt-browser-")
 	if err != nil {
 		return Result{}, fmt.Errorf("create browser profile: %w", err)
@@ -74,6 +78,11 @@ func Render(ctx context.Context, executable, htmlPath string) (Result, error) {
 		chromedp.Navigate(pageURL),
 	); err != nil {
 		return Result{}, errors.New("browser could not load receipt")
+	}
+	if inspection != nil {
+		if err := chromedp.Run(browserCtx, inspection); err != nil {
+			return Result{}, errors.New("browser could not inspect receipt")
+		}
 	}
 
 	var dimensions struct {
