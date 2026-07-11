@@ -1,0 +1,15 @@
+# Go build and test outputs
+/mail2receipt
+/mail2receipt.exe
+*.test
+*.out
+coverage.*
+
+# Local tooling
+.idea/
+.vscode/
+*.swp
+
+# Operating system files
+.DS_Store
+Thumbs.db
