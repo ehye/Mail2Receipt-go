@@ -29,11 +29,13 @@ func TestPrepareInlinesCIDReferences(t *testing.T) {
 		`data:image/png;base64,AQID`,
 		`data:image/jpeg;base64,Ag== 1x`,
 		`data:image/webp;base64,Aw==`,
-		`https://example.com/large.png 2x`,
 	} {
 		if !bytes.Contains(got, []byte(want)) {
 			t.Errorf("prepared HTML does not contain %q", want)
 		}
+	}
+	if bytes.Contains(got, []byte(`https://example.com/large.png`)) {
+		t.Fatalf("prepared HTML retained remote srcset candidate: %s", got)
 	}
 }
 
@@ -67,10 +69,11 @@ func TestPreparePreservesCommaBearingSrcsetURLs(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{remote, `data:image/png;base64,AQID 2x`} {
-		if !bytes.Contains(got, []byte(want)) {
-			t.Errorf("prepared HTML does not contain %q: %s", want, got)
-		}
+	if bytes.Contains(got, []byte(remote)) {
+		t.Errorf("prepared HTML retained remote srcset URL: %s", got)
+	}
+	if !bytes.Contains(got, []byte(`data:image/png;base64,AQID 2x`)) {
+		t.Errorf("prepared HTML does not contain CID candidate: %s", got)
 	}
 }
 
@@ -116,20 +119,74 @@ func TestPrepareRejectsInvalidCIDAssets(t *testing.T) {
 	}
 }
 
-func TestPreparePreservesRemoteResources(t *testing.T) {
-	const input = `<html><head><script src="https://example.com/app.js"></script></head><body><img src="HTTP://example.com/a.png" srcset="https://example.com/a.png 1x, http://example.com/b.png 2x"><a href="https://example.com/">link</a><div style="background:url(https://example.com/bg.png)"></div></body></html>`
+func TestPrepareEmbedsKnownLogosAndRemovesRemoteImages(t *testing.T) {
+	const input = `<html><head><style>
+      .remote { background-image: url("https://images.example/bg.png"); }
+      .gray { border-bottom: 1px solid #ededed; color: #EDEDED; }
+    </style></head><body background="https://images.example/body.png">
+      <a href="https://example.com/order?id=private">order</a>
+      <img id="lockup" src="https://images.example/google-play-crm-lockup-ic-h-transparent-w688px-h140px-2x.png">
+      <img id="logo" src="./google-play-crm-logo-transparent-w192px-h192px-2x.png">
+      <img id="tracking" src="https://images.example/tracking.png">
+      <div style="background: #EDEDED url('https://images.example/tile.png'); color: #123456">text</div>
+    </body></html>`
 
 	got, err := Prepare(message.Document{HTML: []byte(input)})
 	if err != nil {
 		t.Fatal(err)
 	}
+	text := string(got)
+	if count := strings.Count(text, "data:image/png;base64,"); count != 2 {
+		t.Fatalf("embedded PNG count = %d", count)
+	}
+	if strings.Contains(text, "images.example") {
+		t.Fatalf("prepared HTML retained remote image host")
+	}
+	if !strings.Contains(text, `href="https://example.com/order?id=private"`) {
+		t.Fatalf("ordinary hyperlink was removed")
+	}
+	lower := strings.ToLower(text)
+	if strings.Contains(lower, "border-bottom: 1px solid #ededed") {
+		t.Fatalf("gray separator was retained")
+	}
+	if !strings.Contains(lower, "color: #ededed") {
+		t.Fatalf("text color was removed")
+	}
+	if !strings.Contains(lower, "color: #123456") {
+		t.Fatalf("unrelated text color was removed")
+	}
+}
+
+func TestPrepareNormalizesOfflineImageReferences(t *testing.T) {
+	doc := message.Document{
+		HTML: []byte(`<html><head><style>
+@media print { .cid { background: url("cid:tile@id"); } }
+.mixed { background: red; background-image: url(https://images.example/style.png); color: blue; }
+</style></head><body background="https://images.example/body.png">
+<img srcset="https://images.example/remote.png 1x, ./google-play-crm-logo-transparent-w192px-h192px-2x.png 2x, cid:tile@id 3x">
+<div style="background-image: url(https://images.example/inline.png); content: 'a;b:c'; color: red"></div>
+</body></html>`),
+		CID: map[string]message.Asset{"tile@id": {MediaType: "image/gif", Data: []byte{1}}},
+	}
+
+	got, err := Prepare(doc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(got)
+	if strings.Contains(text, "images.example") {
+		t.Fatalf("prepared HTML retained remote image reference: %s", got)
+	}
 	for _, want := range []string{
-		`https://example.com/app.js`, `HTTP://example.com/a.png`,
-		`https://example.com/a.png 1x`, `http://example.com/b.png 2x`,
-		`https://example.com/`, `https://example.com/bg.png`,
+		"data:image/png;base64,",
+		"data:image/gif;base64,AQ== 3x",
+		`url("data:image/gif;base64,AQ==")`,
+		`content: &#39;a;b:c&#39;`,
+		`color: red`,
+		`color: blue`,
 	} {
-		if !bytes.Contains(got, []byte(want)) {
-			t.Errorf("prepared HTML does not contain %q", want)
+		if !strings.Contains(text, want) {
+			t.Errorf("prepared HTML does not contain %q: %s", want, got)
 		}
 	}
 }

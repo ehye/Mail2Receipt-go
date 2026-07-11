@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"net/url"
 	"regexp"
 	"strings"
 	"unicode"
@@ -36,18 +37,35 @@ func Prepare(doc message.Document) ([]byte, error) {
 			if node.Data == "head" {
 				head = node
 			}
-			for i := range node.Attr {
-				attr := &node.Attr[i]
+			attrs := node.Attr[:0]
+			for _, attr := range node.Attr {
+				keep := true
 				switch strings.ToLower(attr.Key) {
 				case "src", "background":
-					attr.Val, err = replaceCID(attr.Val, doc.CID)
+					attr.Val, keep, err = normalizeImageReference(attr.Val, doc.CID)
 				case "srcset":
-					attr.Val, err = replaceSrcset(attr.Val, doc.CID)
+					attr.Val, err = normalizeSrcset(attr.Val, doc.CID)
+					keep = strings.TrimSpace(attr.Val) != ""
 				case "style":
-					attr.Val, err = replaceStyleURLs(attr.Val, doc.CID)
+					attr.Val, err = normalizeDeclarations(attr.Val, doc.CID)
+					keep = strings.TrimSpace(attr.Val) != ""
 				}
 				if err != nil {
 					return err
+				}
+				if keep {
+					attrs = append(attrs, attr)
+				}
+			}
+			node.Attr = attrs
+			if node.Data == "style" {
+				for child := node.FirstChild; child != nil; child = child.NextSibling {
+					if child.Type == html.TextNode {
+						child.Data, err = normalizeStylesheet(child.Data, doc.CID)
+						if err != nil {
+							return err
+						}
+					}
 				}
 			}
 		}
@@ -100,9 +118,26 @@ func lookupAsset(assets map[string]message.Asset, id string) (message.Asset, boo
 	return message.Asset{}, false
 }
 
-func replaceSrcset(value string, assets map[string]message.Asset) (string, error) {
-	var output strings.Builder
-	last := 0
+func normalizeImageReference(value string, assets map[string]message.Asset) (string, bool, error) {
+	replaced, err := replaceCID(value, assets)
+	if err != nil {
+		return "", false, err
+	}
+	if replaced != value {
+		return replaced, true, nil
+	}
+	if logo, ok := embeddedLogo(value); ok {
+		return logo, true, nil
+	}
+	parsed, err := url.Parse(strings.TrimSpace(value))
+	if err == nil && (strings.EqualFold(parsed.Scheme, "http") || strings.EqualFold(parsed.Scheme, "https")) {
+		return "", false, nil
+	}
+	return value, true, nil
+}
+
+func normalizeSrcset(value string, assets map[string]message.Asset) (string, error) {
+	var candidates []string
 	for pos := 0; pos < len(value); {
 		for pos < len(value) && (isASCIISpace(value[pos]) || value[pos] == ',') {
 			pos++
@@ -119,16 +154,12 @@ func replaceSrcset(value string, assets map[string]message.Asset) (string, error
 			continue
 		}
 
-		replaced, err := replaceCID(value[urlStart:urlEnd], assets)
+		replaced, keep, err := normalizeImageReference(value[urlStart:urlEnd], assets)
 		if err != nil {
 			return "", err
 		}
-		if replaced != value[urlStart:urlEnd] {
-			output.WriteString(value[last:urlStart])
-			output.WriteString(replaced)
-			last = urlEnd
-		}
 
+		descriptorStart := pos
 		parentheses := 0
 		for pos < len(value) {
 			switch value[pos] {
@@ -140,19 +171,21 @@ func replaceSrcset(value string, assets map[string]message.Asset) (string, error
 				}
 			case ',':
 				if parentheses == 0 {
+					if keep {
+						candidates = append(candidates, replaced+value[descriptorStart:pos])
+					}
 					pos++
 					goto nextCandidate
 				}
 			}
 			pos++
 		}
+		if keep {
+			candidates = append(candidates, replaced+value[descriptorStart:pos])
+		}
 	nextCandidate:
 	}
-	if last == 0 {
-		return value, nil
-	}
-	output.WriteString(value[last:])
-	return output.String(), nil
+	return strings.Join(candidates, ", "), nil
 }
 
 func isASCIISpace(value byte) bool {
@@ -172,18 +205,153 @@ func replaceStyleURLs(value string, assets map[string]message.Asset) (string, er
 			quote = inner[0]
 			inner = inner[1 : len(inner)-1]
 		}
-		url, err := replaceCID(inner, assets)
+		normalized, keep, err := normalizeImageReference(inner, assets)
 		if err != nil {
 			replaceErr = err
 			return match
 		}
-		if url == inner {
+		if !keep || normalized == inner {
 			return match
 		}
 		if quote != 0 {
-			return "url(" + string(quote) + url + string(quote) + ")"
+			return "url(" + string(quote) + normalized + string(quote) + ")"
 		}
-		return "url(" + url + ")"
+		return "url(" + normalized + ")"
 	})
 	return replaced, replaceErr
+}
+
+func containsRemoteCSSURL(value string) bool {
+	for _, match := range cssURLPattern.FindAllString(value, -1) {
+		open := strings.IndexByte(match, '(')
+		inner := strings.Trim(strings.TrimSpace(match[open+1:len(match)-1]), "'\"")
+		parsed, err := url.Parse(strings.TrimSpace(inner))
+		if err == nil && (strings.EqualFold(parsed.Scheme, "http") || strings.EqualFold(parsed.Scheme, "https")) {
+			return true
+		}
+	}
+	return false
+}
+
+func keepDeclaration(property, value string) bool {
+	property = strings.TrimSpace(strings.ToLower(property))
+	lowerValue := strings.ToLower(value)
+	if property != "color" && strings.Contains(lowerValue, "#ededed") {
+		return false
+	}
+	return !containsRemoteCSSURL(value)
+}
+
+func normalizeDeclarations(value string, assets map[string]message.Asset) (string, error) {
+	replaced, err := replaceStyleURLs(value, assets)
+	if err != nil {
+		return "", err
+	}
+	parts := splitCSS(replaced, ';')
+	kept := parts[:0]
+	for _, declaration := range parts {
+		colon := indexCSS(declaration, ':')
+		if colon < 0 {
+			if !containsRemoteCSSURL(declaration) {
+				kept = append(kept, declaration)
+			}
+			continue
+		}
+		if keepDeclaration(declaration[:colon], declaration[colon+1:]) {
+			kept = append(kept, declaration)
+		}
+	}
+	return strings.Join(kept, ";"), nil
+}
+
+func splitCSS(value string, separator byte) []string {
+	var parts []string
+	start := 0
+	quote := byte(0)
+	depth := 0
+	for i := 0; i < len(value); i++ {
+		char := value[i]
+		if quote != 0 {
+			if char == quote && (i == 0 || value[i-1] != '\\') {
+				quote = 0
+			}
+			continue
+		}
+		switch char {
+		case '\'', '"':
+			quote = char
+		case '(':
+			depth++
+		case ')':
+			if depth > 0 {
+				depth--
+			}
+		default:
+			if char == separator && depth == 0 {
+				parts = append(parts, value[start:i])
+				start = i + 1
+			}
+		}
+	}
+	return append(parts, value[start:])
+}
+
+func indexCSS(value string, separator byte) int {
+	parts := splitCSS(value, separator)
+	if len(parts) < 2 {
+		return -1
+	}
+	return len(parts[0])
+}
+
+func normalizeStylesheet(value string, assets map[string]message.Asset) (string, error) {
+	var output strings.Builder
+	for pos := 0; pos < len(value); {
+		open := strings.IndexByte(value[pos:], '{')
+		if open < 0 {
+			output.WriteString(value[pos:])
+			break
+		}
+		open += pos
+		output.WriteString(value[pos : open+1])
+		depth := 1
+		quote := byte(0)
+		close := open + 1
+		for ; close < len(value) && depth > 0; close++ {
+			char := value[close]
+			if quote != 0 {
+				if char == quote && value[close-1] != '\\' {
+					quote = 0
+				}
+				continue
+			}
+			switch char {
+			case '\'', '"':
+				quote = char
+			case '{':
+				depth++
+			case '}':
+				depth--
+			}
+		}
+		if depth != 0 {
+			output.WriteString(value[open+1:])
+			break
+		}
+		body := value[open+1 : close-1]
+		var normalized string
+		var err error
+		if strings.Contains(body, "{") {
+			normalized, err = normalizeStylesheet(body, assets)
+		} else {
+			normalized, err = normalizeDeclarations(body, assets)
+		}
+		if err != nil {
+			return "", err
+		}
+		output.WriteString(normalized)
+		output.WriteByte('}')
+		pos = close
+	}
+	return output.String(), nil
 }
