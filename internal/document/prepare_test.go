@@ -3,6 +3,7 @@ package document
 import (
 	"bytes"
 	"errors"
+	stdhtml "html"
 	"strings"
 	"testing"
 
@@ -356,6 +357,72 @@ func TestPrepareRemovesRemoteCSSImportsAfterComments(t *testing.T) {
 	}
 	if !strings.Contains(text, "color: olive") {
 		t.Fatalf("prepared HTML removed safe CSS: %s", got)
+	}
+}
+
+func TestPrepareNeutralizesRemoteMetaRefresh(t *testing.T) {
+	const input = `<html><head>
+<meta HTTP-EQUIV=" Refresh " content="0; URL=https://assets.example/plain">
+<meta http-equiv="refresh" content=" 5 ; url = 'HTTP://assets.example/quoted' ">
+<meta name="description" content="safe receipt">
+<meta http-equiv="refresh" content="10; url=/local/receipt">
+</head><body></body></html>`
+
+	got, err := Prepare(message.Document{HTML: []byte(input)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(got)
+	if strings.Contains(text, "assets.example") {
+		t.Fatalf("prepared HTML retained remote meta refresh: %s", got)
+	}
+	for _, want := range []string{`name="description" content="safe receipt"`, `content="10; url=/local/receipt"`} {
+		if !strings.Contains(text, want) {
+			t.Errorf("prepared HTML removed harmless meta content %q: %s", want, got)
+		}
+	}
+}
+
+func TestPrepareNormalizesIframeSrcdocOffline(t *testing.T) {
+	nested := `<html><head><base href="https://assets.example/"><meta http-equiv="refresh" content="0;url=https://assets.example/next"><style>.remote { background:url(https://assets.example/bg.png) } .safe { color: navy }</style></head><body><img src="https://assets.example/remote.png"><img src="./google-play-crm-logo-transparent-w192px-h192px-2x.png"><p>safe nested text</p></body></html>`
+	input := `<html><head></head><body><iframe srcdoc="` + stdhtml.EscapeString(nested) + `"></iframe></body></html>`
+
+	got, err := Prepare(message.Document{HTML: []byte(input)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(got)
+	if strings.Contains(text, "assets.example") {
+		t.Fatalf("prepared HTML retained remote srcdoc resource: %s", got)
+	}
+	for _, want := range []string{"data:image/png;base64,", "color: navy", "safe nested text"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("prepared HTML removed safe nested content %q: %s", want, got)
+		}
+	}
+}
+
+func TestPrepareLimitsIframeSrcdocNesting(t *testing.T) {
+	const wantDepth = 4
+	nested := `<p>safe outer text</p>`
+	for i := 0; i < wantDepth+2; i++ {
+		nested = `<iframe srcdoc="` + stdhtml.EscapeString(nested) + `"></iframe>`
+	}
+	input := `<html><head></head><body>` + nested + `</body></html>`
+
+	first, err := Prepare(message.Document{HTML: []byte(input)})
+	if err != nil {
+		t.Fatalf("first Prepare error = %v", err)
+	}
+	second, err := Prepare(message.Document{HTML: []byte(input)})
+	if err != nil {
+		t.Fatalf("second Prepare error = %v", err)
+	}
+	if !bytes.Equal(first, second) {
+		t.Fatal("over-limit srcdoc normalization was not deterministic")
+	}
+	if count := bytes.Count(first, []byte("srcdoc=")); count != wantDepth {
+		t.Fatalf("srcdoc attribute count = %d, want %d: %s", count, wantDepth, first)
 	}
 }
 

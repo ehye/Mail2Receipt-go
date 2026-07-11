@@ -18,6 +18,8 @@ import (
 const printCSS = `@page { size: A5 portrait; margin: 8mm; }
 html, body { margin: 0; padding: 0; }`
 
+const maxSrcdocDepth = 4
+
 var (
 	ErrMissingCID  = errors.New("referenced CID is missing")
 	ErrNonImageCID = errors.New("referenced CID is not an image")
@@ -25,7 +27,11 @@ var (
 )
 
 func Prepare(doc message.Document) ([]byte, error) {
-	root, err := html.Parse(bytes.NewReader(doc.HTML))
+	return prepareHTML(doc.HTML, doc.CID, 0, true)
+}
+
+func prepareHTML(source []byte, assets map[string]message.Asset, srcdocDepth int, addPrintCSS bool) ([]byte, error) {
+	root, err := html.Parse(bytes.NewReader(source))
 	if err != nil {
 		return nil, fmt.Errorf("parse HTML: %w", err)
 	}
@@ -38,6 +44,7 @@ func Prepare(doc message.Document) ([]byte, error) {
 				head = node
 			}
 			attrs := node.Attr[:0]
+			remoteRefresh := node.Data == "meta" && hasRemoteMetaRefresh(node.Attr)
 			for _, attr := range node.Attr {
 				keep := true
 				switch strings.ToLower(attr.Key) {
@@ -54,13 +61,27 @@ func Prepare(doc message.Document) ([]byte, error) {
 						keep = false
 					}
 				case "src", "background":
-					attr.Val, keep, err = normalizeImageReference(attr.Val, doc.CID)
+					attr.Val, keep, err = normalizeImageReference(attr.Val, assets)
+				case "srcdoc":
+					if node.Data == "iframe" {
+						if srcdocDepth >= maxSrcdocDepth {
+							keep = false
+						} else {
+							var nested []byte
+							nested, err = prepareHTML([]byte(attr.Val), assets, srcdocDepth+1, false)
+							attr.Val = string(nested)
+						}
+					}
 				case "srcset":
-					attr.Val, err = normalizeSrcset(attr.Val, doc.CID)
+					attr.Val, err = normalizeSrcset(attr.Val, assets)
 					keep = strings.TrimSpace(attr.Val) != ""
 				case "style":
-					attr.Val, err = normalizeDeclarations(attr.Val, doc.CID)
+					attr.Val, err = normalizeDeclarations(attr.Val, assets)
 					keep = strings.TrimSpace(attr.Val) != ""
+				case "content":
+					if remoteRefresh {
+						keep = false
+					}
 				}
 				if err != nil {
 					return err
@@ -73,7 +94,7 @@ func Prepare(doc message.Document) ([]byte, error) {
 			if node.Data == "style" {
 				for child := node.FirstChild; child != nil; child = child.NextSibling {
 					if child.Type == html.TextNode {
-						child.Data, err = normalizeStylesheet(child.Data, doc.CID)
+						child.Data, err = normalizeStylesheet(child.Data, assets)
 						if err != nil {
 							return err
 						}
@@ -92,15 +113,50 @@ func Prepare(doc message.Document) ([]byte, error) {
 		return nil, err
 	}
 
-	style := &html.Node{Type: html.ElementNode, Data: "style"}
-	style.AppendChild(&html.Node{Type: html.TextNode, Data: printCSS})
-	head.AppendChild(style)
+	if addPrintCSS {
+		style := &html.Node{Type: html.ElementNode, Data: "style"}
+		style.AppendChild(&html.Node{Type: html.TextNode, Data: printCSS})
+		head.AppendChild(style)
+	}
 
 	var output bytes.Buffer
 	if err := html.Render(&output, root); err != nil {
 		return nil, fmt.Errorf("serialize HTML: %w", err)
 	}
 	return output.Bytes(), nil
+}
+
+func hasRemoteMetaRefresh(attrs []html.Attribute) bool {
+	var refresh bool
+	var content string
+	for _, attr := range attrs {
+		switch strings.ToLower(attr.Key) {
+		case "http-equiv":
+			refresh = strings.EqualFold(strings.TrimSpace(attr.Val), "refresh")
+		case "content":
+			content = attr.Val
+		}
+	}
+	if !refresh {
+		return false
+	}
+	semicolon := strings.IndexByte(content, ';')
+	if semicolon < 0 {
+		return false
+	}
+	target := strings.TrimSpace(content[semicolon+1:])
+	if len(target) < 3 || !strings.EqualFold(target[:3], "url") {
+		return false
+	}
+	target = strings.TrimSpace(target[3:])
+	if len(target) == 0 || target[0] != '=' {
+		return false
+	}
+	target = strings.TrimSpace(target[1:])
+	if len(target) >= 2 && (target[0] == '\'' || target[0] == '"') && target[len(target)-1] == target[0] {
+		target = target[1 : len(target)-1]
+	}
+	return isRemoteHTTPURL(target)
 }
 
 func isResourceHrefElement(name string) bool {
