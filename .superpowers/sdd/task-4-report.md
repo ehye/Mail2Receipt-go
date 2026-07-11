@@ -152,3 +152,41 @@ go test -race ./internal/browser -run TestRender -count=1 -timeout 180s
 go vet ./...
 git diff --check
 ```
+
+## JavaScript Security Decision
+
+The user resolved the prior plan conflict: JavaScript execution must be disabled before navigating to untrusted email HTML. This supersedes the earlier delayed-script request regression; quiescence now exists only to settle static image network events.
+
+Implementation:
+
+- Calls CDP `Emulation.setScriptExecutionDisabled(true)` in the ordered action sequence before `Page.navigate`.
+- Keeps the 300 ms quiescence period for static `<img>`, CSS background, redirect, and decode-related network events.
+- Continues to use trusted CDP evaluation for DOM image checks, computed CSS background decoding, and layout measurement; installed Edge permits these inspector evaluations while page script execution is disabled.
+
+TDD RED evidence before adding the CDP command:
+
+```text
+TestRenderDisablesJavaScriptWhileLoadingStaticImages:
+script-scheduled image requests = 1, want 0
+```
+
+The regression includes a static `<img>` delayed by 700 ms and a static CSS background, while untrusted inline script attempts to schedule another image after 400 ms, beyond the 300 ms quiescence period. After the fix, exactly two static image requests occur and the script-scheduled request count remains zero.
+
+The fitting boundary test was also corrected. The previous 1460 px integration fixture exercised approximately 0.502 scale rather than the exact lower bound. `scaleToFit` is now directly tested with dimensions `printableWidth / 0.50` and `printableHeight / 0.50`, requiring an exact `0.50` result; `math.Nextafter` verifies the immediately larger height is rejected.
+
+Exact-boundary RED evidence:
+
+```text
+internal\browser\render_test.go:233:16: undefined: scaleToFit
+internal\browser\render_test.go:241:11: undefined: scaleToFit
+```
+
+Final verification passed:
+
+```text
+go test ./internal/browser -run TestRender -v -timeout 150s
+go test ./... -count=1 -timeout 180s
+go test -race ./internal/browser -run TestRender -count=1 -timeout 180s
+go vet ./...
+git diff --check
+```

@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/chromedp/cdproto/emulation"
 	"github.com/chromedp/cdproto/network"
 	"github.com/chromedp/cdproto/page"
 	"github.com/chromedp/cdproto/runtime"
@@ -97,6 +98,7 @@ func Render(ctx context.Context, executable, htmlPath string) (Result, error) {
 	if err := chromedp.Run(browserCtx,
 		network.Enable(),
 		page.Enable(),
+		emulation.SetScriptExecutionDisabled(true),
 		chromedp.ActionFunc(func(ctx context.Context) error {
 			_, _, navigationError, _, err = page.Navigate(pageURL).Do(ctx)
 			return err
@@ -176,9 +178,9 @@ func Render(ctx context.Context, executable, htmlPath string) (Result, error) {
 		return Result{}, fmt.Errorf("image failed: %s", sanitizeURL(brokenImages[0]))
 	}
 
-	scale := math.Min(maxScale, math.Min(printableWidth/dimensions.Width, printableHeight/dimensions.Height))
-	if math.IsNaN(scale) || math.IsInf(scale, 0) || scale < minScale {
-		return Result{}, errors.New("content cannot fit one A5 page")
+	scale, err := scaleToFit(dimensions.Width, dimensions.Height)
+	if err != nil {
+		return Result{}, err
 	}
 
 	var pdf []byte
@@ -204,6 +206,14 @@ func Render(ctx context.Context, executable, htmlPath string) (Result, error) {
 		return Result{}, errors.New("browser did not produce exactly one PDF page")
 	}
 	return Result{PDF: pdf, Scale: scale}, nil
+}
+
+func scaleToFit(width, height float64) (float64, error) {
+	scale := math.Min(maxScale, math.Min(printableWidth/width, printableHeight/height))
+	if math.IsNaN(scale) || math.IsInf(scale, 0) || scale < minScale {
+		return 0, errors.New("content cannot fit one A5 page")
+	}
+	return scale, nil
 }
 
 func (s *imageState) listen(event any) {

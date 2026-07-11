@@ -3,6 +3,7 @@ package browser
 import (
 	"context"
 	"fmt"
+	"math"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -161,23 +162,30 @@ func TestRenderRejectsFailedImagesWithoutLeakingQuery(t *testing.T) {
 	}
 }
 
-func TestRenderWaitsForDelayedImageRequests(t *testing.T) {
+func TestRenderDisablesJavaScriptWhileLoadingStaticImages(t *testing.T) {
 	executable := testBrowser(t)
-	var requests atomic.Int32
+	var staticRequests atomic.Int32
+	var scriptRequests atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		requests.Add(1)
+		if r.URL.Path == "/script.png" {
+			scriptRequests.Add(1)
+		} else {
+			staticRequests.Add(1)
+		}
+		if r.URL.Path == "/static-img.png" {
+			time.Sleep(700 * time.Millisecond)
+		}
 		servePNG(w, r)
 	}))
 	t.Cleanup(server.Close)
 
-	body := fmt.Sprintf(`<div id="background" style="width:20px;height:20px"></div><script>
+	body := fmt.Sprintf(`<img src="%s/static-img.png"><div style="width:20px;height:20px;background-image:url('%s/static-background.png')"></div><script>
 setTimeout(() => {
   const img = document.createElement('img');
-  img.src = '%s/delayed-img.png';
+  img.src = '%s/script.png';
   document.body.appendChild(img);
-  document.getElementById('background').style.backgroundImage = "url('%s/delayed-background.png')";
-}, 150);
-</script>`, server.URL, server.URL)
+}, 400);
+</script>`, server.URL, server.URL, server.URL)
 	result, err := Render(context.Background(), executable, writeHTML(t, body))
 	if err != nil {
 		t.Fatalf("Render() error = %v", err)
@@ -185,8 +193,11 @@ setTimeout(() => {
 	if !strings.HasPrefix(string(result.PDF), "%PDF-") {
 		t.Fatalf("Render() PDF prefix = %q", result.PDF[:min(len(result.PDF), 5)])
 	}
-	if got := requests.Load(); got != 2 {
-		t.Fatalf("delayed image requests = %d, want 2", got)
+	if got := staticRequests.Load(); got != 2 {
+		t.Fatalf("static image requests = %d, want 2", got)
+	}
+	if got := scriptRequests.Load(); got != 0 {
+		t.Fatalf("script-scheduled image requests = %d, want 0", got)
 	}
 }
 
@@ -218,14 +229,18 @@ func TestRenderRejectsScaleBelowMinimum(t *testing.T) {
 	}
 }
 
-func TestRenderAcceptsScaleAtMinimumBoundary(t *testing.T) {
-	executable := testBrowser(t)
-	result, err := Render(context.Background(), executable, writeHTML(t, `<div style="height:1460px;width:400px">fits</div>`))
+func TestScaleToFitAcceptsExactMinimumBoundary(t *testing.T) {
+	scale, err := scaleToFit(printableWidth/minScale, printableHeight/minScale)
 	if err != nil {
-		t.Fatalf("Render() error = %v", err)
+		t.Fatalf("scaleToFit() error = %v", err)
 	}
-	if result.Scale < 0.50 || result.Scale > 0.51 {
-		t.Fatalf("Render() scale = %v, want minimum boundary", result.Scale)
+	if scale != minScale {
+		t.Fatalf("scaleToFit() = %v, want exactly %v", scale, minScale)
+	}
+
+	_, err = scaleToFit(printableWidth/minScale, math.Nextafter(printableHeight/minScale, math.Inf(1)))
+	if err == nil || err.Error() != "content cannot fit one A5 page" {
+		t.Fatalf("scaleToFit() above boundary error = %v, want content cannot fit one A5 page", err)
 	}
 }
 
