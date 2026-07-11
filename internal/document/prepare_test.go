@@ -275,6 +275,90 @@ func TestPrepareUsesBackslashParityForCSSQuotes(t *testing.T) {
 	}
 }
 
+func TestPrepareNormalizesUnclosedStylesheetBlock(t *testing.T) {
+	const input = `<html><head><style>.receipt { color: purple; border-color: #EDEDED; background: url(https://assets.example/unclosed.png); font-weight: bold` + `</style></head><body></body></html>`
+
+	got, err := Prepare(message.Document{HTML: []byte(input)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(got)
+	for _, unwanted := range []string{"assets.example", "border-color"} {
+		if strings.Contains(strings.ToLower(text), strings.ToLower(unwanted)) {
+			t.Errorf("prepared HTML retained unsafe unclosed-block CSS %q: %s", unwanted, got)
+		}
+	}
+	for _, want := range []string{"color: purple", "font-weight: bold"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("prepared HTML removed safe unclosed-block CSS %q: %s", want, got)
+		}
+	}
+}
+
+func TestPrepareRemovesRemoteBaseAndPreservesNonremoteBase(t *testing.T) {
+	const input = `<html><head><base id="remote" href="https://assets.example/receipts/"><base id="local" href="/receipts/"></head><body><img src="relative.png"></body></html>`
+
+	got, err := Prepare(message.Document{HTML: []byte(input)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(got)
+	if strings.Contains(text, "assets.example") {
+		t.Fatalf("prepared HTML retained remote base URL: %s", got)
+	}
+	if !strings.Contains(text, `id="local" href="/receipts/"`) {
+		t.Fatalf("prepared HTML removed nonremote base URL: %s", got)
+	}
+}
+
+func TestPrepareRemovesRemoteLoadBearingAttributesAndPreservesNavigation(t *testing.T) {
+	const input = `<html><head></head><body>
+<object data="https://assets.example/object.bin"></object>
+<video poster="https://assets.example/poster.png"></video>
+<input poster="https://assets.example/input-poster.png">
+<svg><image href="https://assets.example/vector.png"></image><use href="https://assets.example/sprite.svg#icon"></use></svg>
+<form action="https://example.com/submit"></form><a href="https://example.com/order">order</a><area href="https://example.com/map">
+</body></html>`
+
+	got, err := Prepare(message.Document{HTML: []byte(input)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(got)
+	if strings.Contains(text, "assets.example") {
+		t.Fatalf("prepared HTML retained a remote load-bearing attribute: %s", got)
+	}
+	for _, want := range []string{
+		`action="https://example.com/submit"`,
+		`href="https://example.com/order"`,
+		`href="https://example.com/map"`,
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("prepared HTML removed navigation target %q: %s", want, got)
+		}
+	}
+}
+
+func TestPrepareRemovesRemoteCSSImportsAfterComments(t *testing.T) {
+	const input = `<html><head><style>
+@import /* quoted */ "https://assets.example/commented.css";
+@import /* function */ url(https://assets.example/commented-url.css);
+.receipt { color: olive; }
+</style></head><body></body></html>`
+
+	got, err := Prepare(message.Document{HTML: []byte(input)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(got)
+	if strings.Contains(text, "assets.example") {
+		t.Fatalf("prepared HTML retained remote import after comment: %s", got)
+	}
+	if !strings.Contains(text, "color: olive") {
+		t.Fatalf("prepared HTML removed safe CSS: %s", got)
+	}
+}
+
 func TestPrepareInjectsOnePrintStyleAsFinalHeadChild(t *testing.T) {
 	got, err := Prepare(message.Document{HTML: []byte(`<html><head><title>Receipt</title></head><body></body></html>`)})
 	if err != nil {

@@ -41,8 +41,16 @@ func Prepare(doc message.Document) ([]byte, error) {
 			for _, attr := range node.Attr {
 				keep := true
 				switch strings.ToLower(attr.Key) {
+				case "data":
+					if node.Data == "object" && isRemoteHTTPURL(attr.Val) {
+						keep = false
+					}
 				case "href":
-					if node.Data == "link" && isRemoteHTTPURL(attr.Val) {
+					if isResourceHrefElement(node.Data) && isRemoteHTTPURL(attr.Val) {
+						keep = false
+					}
+				case "poster":
+					if isRemoteHTTPURL(attr.Val) {
 						keep = false
 					}
 				case "src", "background":
@@ -93,6 +101,15 @@ func Prepare(doc message.Document) ([]byte, error) {
 		return nil, fmt.Errorf("serialize HTML: %w", err)
 	}
 	return output.Bytes(), nil
+}
+
+func isResourceHrefElement(name string) bool {
+	switch name {
+	case "base", "image", "link", "use":
+		return true
+	default:
+		return false
+	}
 }
 
 func replaceCID(value string, assets map[string]message.Asset) (string, error) {
@@ -376,7 +393,18 @@ func normalizeStylesheet(value string, assets map[string]message.Asset) (string,
 			}
 		}
 		if depth != 0 {
-			output.WriteString(value[open+1:])
+			body := value[open+1:]
+			var normalized string
+			var err error
+			if findCSSBrace(body, 0) >= 0 {
+				normalized, err = normalizeStylesheet(body, assets)
+			} else {
+				normalized, err = normalizeDeclarations(body, assets)
+			}
+			if err != nil {
+				return "", err
+			}
+			output.WriteString(normalized)
 			break
 		}
 		body := value[open+1 : close-1]
@@ -445,18 +473,11 @@ func removeRemoteImports(value string) string {
 }
 
 func isRemoteImport(value string) bool {
-	trimmed := strings.TrimSpace(value)
-	for strings.HasPrefix(trimmed, "/*") {
-		end := strings.Index(trimmed[2:], "*/")
-		if end < 0 {
-			return false
-		}
-		trimmed = strings.TrimSpace(trimmed[end+4:])
-	}
+	trimmed := trimCSSSpaceAndComments(value)
 	if len(trimmed) < len("@import") || !strings.EqualFold(trimmed[:len("@import")], "@import") {
 		return false
 	}
-	reference := strings.TrimSpace(trimmed[len("@import"):])
+	reference := trimCSSSpaceAndComments(trimmed[len("@import"):])
 	if containsRemoteCSSURL(reference) {
 		return true
 	}
@@ -470,4 +491,16 @@ func isRemoteImport(value string) bool {
 		}
 	}
 	return false
+}
+
+func trimCSSSpaceAndComments(value string) string {
+	trimmed := strings.TrimSpace(value)
+	for strings.HasPrefix(trimmed, "/*") {
+		end := strings.Index(trimmed[2:], "*/")
+		if end < 0 {
+			return trimmed
+		}
+		trimmed = strings.TrimSpace(trimmed[end+4:])
+	}
+	return trimmed
 }
