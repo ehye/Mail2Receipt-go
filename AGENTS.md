@@ -5,4 +5,5 @@
 - A dropped `.eml` is passed as the sole argument and must create `output.pdf` beside the input file. An explicit output path remains supported.
 - Rendering must embed the two approved Google Play logo PNGs, remove other remote images and non-text `#EDEDED` styling, block HTTP(S), and use no proxy. It must produce A5 portrait and verify exactly one PDF page. Start fitting near 0.79 scale and do not silently clip content.
 - `receipt.eml`, `receipt.html`, and `receipt.pdf` are the current end-to-end input, decoded-body reference, and expected one-page visual reference. They contain real-looking receipt/account data; do not expose their contents in logs or error messages.
-- No Go module, source, CI, or verified developer commands exist yet. Update this file with exact build and focused-test commands when scaffolding is added.
+- Build the CLI with `go build ./cmd/mail2receipt`; run focused CLI tests with `go test ./internal/app -v`.
+- Run the full test suite with `go test ./... -timeout 120s` and static checks with `go vet ./...`.
