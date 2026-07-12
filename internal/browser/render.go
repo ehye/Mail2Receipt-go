@@ -116,16 +116,29 @@ func renderWithInspection(ctx context.Context, executable, htmlPath string, insp
   const visible = style => style.display !== 'none' &&
     style.visibility !== 'hidden' && style.visibility !== 'collapse' &&
     Number.parseFloat(style.opacity || '1') !== 0;
+  const hasNonzeroComponent = value => value.split(/\s+/).some(component => {
+    const number = Number.parseFloat(component);
+    return !Number.isFinite(number) || number !== 0;
+  });
   const hasInkOverflow = style => style.boxShadow !== 'none' ||
     style.textShadow !== 'none' || style.filter !== 'none' ||
     (style.outlineStyle !== 'none' && Number.parseFloat(style.outlineWidth) !== 0) ||
     Number.parseFloat(style.webkitTextStrokeWidth || '0') !== 0 ||
-    (style.stroke !== 'none' && Number.parseFloat(style.strokeWidth || '0') !== 0);
+    (style.stroke !== 'none' && Number.parseFloat(style.strokeWidth || '0') !== 0) ||
+    hasNonzeroComponent(style.borderImageOutset || '0') ||
+    (style.webkitBoxReflect || 'none') !== 'none';
+  const opaqueTags = new Set([
+    'audio', 'button', 'canvas', 'embed', 'iframe', 'input', 'meter', 'object',
+    'optgroup', 'option', 'progress', 'select', 'textarea', 'video'
+  ]);
+  const opaqueNamespace = element => element.namespaceURI === 'http://www.w3.org/2000/svg' ||
+    element.namespaceURI === 'http://www.w3.org/1998/Math/MathML';
 
   for (const element of document.querySelectorAll('*')) {
     const style = getComputedStyle(element);
     if (visible(style)) {
-      if (hasInkOverflow(style)) valid = false;
+      if (style.display === 'list-item' || opaqueNamespace(element) ||
+          opaqueTags.has(element.localName) || hasInkOverflow(style)) valid = false;
       for (const rect of element.getClientRects()) {
         if (rect.width > 0 || rect.height > 0) {
           include(rect.left + scrollX, rect.top + scrollY, rect.right + scrollX, rect.bottom + scrollY);
@@ -140,6 +153,11 @@ func renderWithInspection(ctx context.Context, executable, htmlPath string, insp
       // CSSOM does not expose pseudo-element client rectangles. Reject generated
       // content rather than infer bounds that can omit transforms or visual ink.
       valid = false;
+    }
+
+    for (const pseudo of ['::marker', '::first-letter', '::first-line']) {
+      const pseudoStyle = getComputedStyle(element, pseudo);
+      if (visible(pseudoStyle) && hasInkOverflow(pseudoStyle)) valid = false;
     }
   }
   return {width: maxRight, height: maxBottom, valid: valid && minLeft >= 0 && minTop >= 0};

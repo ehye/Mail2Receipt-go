@@ -112,17 +112,62 @@ func TestRenderFitsTransformedOverflow(t *testing.T) {
 func TestRenderRejectsUnmeasurablePseudoElementGeometry(t *testing.T) {
 	executable := testBrowser(t)
 	tests := []struct {
-		name string
-		css  string
+		name     string
+		selector string
+		css      string
 	}{
-		{"fixed transformed", `content:"x";position:fixed;left:10px;top:10px;width:20px;height:20px;transform:scale(2)`},
-		{"fixed content sized", `content:"content sized";position:fixed;left:10px;top:10px;width:auto;height:auto`},
-		{"fixed border and padding", `content:"x";position:fixed;left:600px;top:0;width:10px;height:10px;border:20px solid;padding:20px`},
+		{"before symmetry", "::before", `content:"x"`},
+		{"fixed transformed", "::after", `content:"x";position:fixed;left:10px;top:10px;width:20px;height:20px;transform:scale(2)`},
+		{"fixed content sized", "::after", `content:"content sized";position:fixed;left:10px;top:10px;width:auto;height:auto`},
+		{"fixed border and padding", "::after", `content:"x";position:fixed;left:600px;top:0;width:10px;height:10px;border:20px solid;padding:20px`},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			body := fmt.Sprintf(`<style>@media print{#generated::after{%s}}</style><div id="generated"></div>`, test.css)
+			body := fmt.Sprintf(`<style>@media print{#generated%s{%s}}</style><div id="generated"></div>`, test.selector, test.css)
 			_, err := Render(context.Background(), executable, writeHTML(t, body))
+			if err == nil || err.Error() != "content cannot fit one A5 page" {
+				t.Fatalf("Render() error = %v, want content cannot fit one A5 page", err)
+			}
+		})
+	}
+}
+
+func TestRenderRejectsUnsupportedRenderingSurfaces(t *testing.T) {
+	executable := testBrowser(t)
+	tests := []struct {
+		name string
+		body string
+	}{
+		{"ordinary list marker", `<ul><li>safe ordinary list</li></ul>`},
+		{"SVG marker", `<svg width="100" height="20"><defs><marker id="m"><path d="M0 0L10 5L0 10z"/></marker></defs><path d="M0 10L80 10" marker-end="url(#m)"/></svg>`},
+		{"SVG element", `<svg width="100" height="20"><rect width="100" height="20"/></svg>`},
+		{"native form control", `<input value="browser rendered">`},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			_, err := Render(context.Background(), executable, writeHTML(t, test.body))
+			if err == nil || err.Error() != "content cannot fit one A5 page" {
+				t.Fatalf("Render() error = %v, want content cannot fit one A5 page", err)
+			}
+		})
+	}
+}
+
+func TestRenderRejectsAdditionalPaintOverflow(t *testing.T) {
+	executable := testBrowser(t)
+	tests := []struct {
+		name string
+		body string
+	}{
+		{"border image outset", `<div style="border:10px solid transparent;border-image:linear-gradient(black,black) 1 / 10px / 20px">outset</div>`},
+		{"box reflection", `<div style="-webkit-box-reflect:right 10px">reflection</div>`},
+		{"marker ink", `<style>li::marker{text-shadow:20px 0 black}</style><li>marker</li>`},
+		{"first letter ink", `<style>p::first-letter{text-shadow:20px 0 black}</style><p>first letter</p>`},
+		{"first line ink", `<style>p::first-line{text-shadow:20px 0 black}</style><p>first line</p>`},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			_, err := Render(context.Background(), executable, writeHTML(t, test.body))
 			if err == nil || err.Error() != "content cannot fit one A5 page" {
 				t.Fatalf("Render() error = %v, want content cannot fit one A5 page", err)
 			}
