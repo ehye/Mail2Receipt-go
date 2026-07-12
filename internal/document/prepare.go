@@ -20,7 +20,7 @@ import (
 	"mail2receipt/internal/message"
 )
 
-const printCSS = `@page { size: A5 portrait; margin: 2mm; }
+const printCSS = `@page { size: A5 portrait; margin: 0; }
 html, body { margin: 0; padding: 0; }
 [data-mail2receipt-emphasis], [data-mail2receipt-emphasis] * { font-size: 12px !important; line-height: 18px !important; }`
 
@@ -45,7 +45,15 @@ func prepareHTML(source []byte, assets map[string]message.Asset, srcdocDepth int
 	var head *html.Node
 	var walk func(*html.Node) error
 	walk = func(node *html.Node) error {
+		if node.Type == html.CommentNode && referencesDecorativeImage(node.Data) {
+			node.Parent.RemoveChild(node)
+			return nil
+		}
 		if node.Type == html.ElementNode {
+			if elementReferencesDecorativeImage(node) {
+				node.Parent.RemoveChild(node)
+				return nil
+			}
 			if node.Data == "base" {
 				node.Parent.RemoveChild(node)
 				return nil
@@ -289,6 +297,79 @@ func isASCIISpace(value byte) bool {
 	return value == ' ' || value == '\t' || value == '\n' || value == '\f' || value == '\r'
 }
 
+func elementReferencesDecorativeImage(node *html.Node) bool {
+	if node.Data == "style" {
+		for child := node.FirstChild; child != nil; child = child.NextSibling {
+			if child.Type != html.TextNode {
+				continue
+			}
+			for _, resource := range scanCSSResources(child.Data) {
+				if referencesDecorativeImage(resource.value) {
+					return true
+				}
+			}
+		}
+	}
+	for _, attr := range node.Attr {
+		name := strings.ToLower(attr.Key)
+		switch name {
+		case "data":
+			if node.Data == "object" && referencesDecorativeImage(attr.Val) {
+				return true
+			}
+		case "href":
+			if node.Namespace == "svg" && node.Data == "image" && referencesDecorativeImage(attr.Val) {
+				return true
+			}
+		case "poster":
+			if node.Data == "video" && referencesDecorativeImage(attr.Val) {
+				return true
+			}
+		case "src":
+			if node.Data == "img" && referencesDecorativeImage(attr.Val) {
+				return true
+			}
+		case "srcset":
+			if (node.Data == "img" || node.Data == "source") && referencesDecorativeImage(attr.Val) {
+				return true
+			}
+		case "background":
+			if (node.Data == "body" || node.Data == "td" || node.Data == "th") && referencesDecorativeImage(attr.Val) {
+				return true
+			}
+		case "style":
+			for _, resource := range scanCSSResources(attr.Val) {
+				if referencesDecorativeImage(resource.value) {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+func referencesDecorativeImage(value string) bool {
+	for _, candidate := range strings.FieldsFunc(value, func(char rune) bool {
+		return unicode.IsSpace(char) || strings.ContainsRune(`()'"=,;[]{}<>`, char)
+	}) {
+		candidate = strings.TrimSpace(candidate)
+		if suffix := strings.IndexAny(candidate, "?#"); suffix >= 0 {
+			candidate = candidate[:suffix]
+		}
+		candidate = strings.TrimRight(candidate, "/\\")
+		if separator := strings.LastIndexAny(candidate, "/\\"); separator >= 0 {
+			candidate = candidate[separator+1:]
+		}
+		switch {
+		case strings.EqualFold(candidate, "email_top.png"),
+			strings.EqualFold(candidate, "email_mid.png"),
+			strings.EqualFold(candidate, "email_bottom.png"):
+			return true
+		}
+	}
+	return false
+}
+
 func replaceStyleURLs(value string, assets map[string]message.Asset) (string, error) {
 	resources := scanCSSResources(value)
 	for pos := len(resources) - 1; pos >= 0; pos-- {
@@ -362,7 +443,17 @@ func matchingCSSParen(value string, open int) int {
 func keepDeclaration(property, value string) bool {
 	property = strings.TrimSpace(strings.ToLower(property))
 	lowerValue := strings.ToLower(value)
-	if property != "color" && strings.Contains(lowerValue, "#ededed") {
+	borderColor := false
+	switch property {
+	case "border", "border-color",
+		"border-top", "border-right", "border-bottom", "border-left",
+		"border-top-color", "border-right-color", "border-bottom-color", "border-left-color",
+		"border-block", "border-inline", "border-block-color", "border-inline-color",
+		"border-block-start", "border-block-end", "border-inline-start", "border-inline-end",
+		"border-block-start-color", "border-block-end-color", "border-inline-start-color", "border-inline-end-color":
+		borderColor = true
+	}
+	if property != "color" && !borderColor && strings.Contains(lowerValue, "#ededed") {
 		return false
 	}
 	return !containsNonEmbeddedCSSURL(value)

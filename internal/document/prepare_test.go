@@ -232,14 +232,201 @@ func TestPrepareEmbedsKnownLogosAndRemovesRemoteImages(t *testing.T) {
 		t.Fatalf("ordinary hyperlink was removed")
 	}
 	lower := strings.ToLower(text)
-	if strings.Contains(lower, "border-bottom: 1px solid #ededed") {
-		t.Fatalf("gray separator was retained")
+	if !strings.Contains(lower, "border-bottom: 1px solid #ededed") {
+		t.Fatalf("gray separator was removed")
 	}
 	if !strings.Contains(lower, "color: #ededed") {
 		t.Fatalf("text color was removed")
 	}
 	if !strings.Contains(lower, "color: #123456") {
 		t.Fatalf("unrelated text color was removed")
+	}
+}
+
+func TestPrepareRemovesExactDecorativeImageElementsAndComments(t *testing.T) {
+	const input = `<html><head><style>.keep{background:url(email_top.png.bak)}</style></head><body>
+<!-- decorative https://assets.example/EMAIL_TOP.PNG?version=1 -->
+<!-- keep email_top.png.bak -->
+<div id="top" style="background-image:url('https://assets.example/a/email_top.png#x')"><span>remove top</span></div>
+<picture id="mid-wrapper"><source id="mid" srcset="https://assets.example/EMAIL_MID.PNG?x=1 1x"><span>keep narrow wrapper</span></picture>
+<object id="bottom" data="../email_bottom.png?download=1"><span>remove bottom</span></object>
+<div id="similar"><img src="email_top.png.bak"><span>keep similar</span></div>
+<a id="navigation" href="https://example.com/email_top.png">keep navigation</a>
+</body></html>`
+
+	got, err := Prepare(message.Document{HTML: []byte(input)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(got)
+	for _, unwanted := range []string{`id="top"`, `id="mid"`, `id="bottom"`, "remove top", "remove bottom", "decorative https://assets.example/EMAIL_TOP.PNG"} {
+		if strings.Contains(text, unwanted) {
+			t.Errorf("prepared HTML retained decorative content %q", unwanted)
+		}
+	}
+	for _, want := range []string{`id="mid-wrapper"`, "keep narrow wrapper", `id="similar"`, "keep similar", "email_top.png.bak", `id="navigation"`, "keep navigation"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("prepared HTML removed unrelated content %q", want)
+		}
+	}
+}
+
+func TestPrepareRemovesStyleElementsReferencingDecorativeImages(t *testing.T) {
+	const input = `<html><head>
+<style id="top">.legacy{background:url("https://assets.example/EMAIL_TOP.PNG?version=1")}.lost{color:red}</style>
+<style id="mid">.legacy{background-image:image-set(url(../email_mid.png#x) 1x)}</style>
+<style id="bottom">.legacy{mask-image:cross-fade(url(email_bottom.png), black)}</style>
+<style id="similar">.keep{background:url(email_top.png.bak);color:green}</style>
+<style id="text">.keep::before{content:"url(email_mid.png)";color:blue}</style>
+</head><body></body></html>`
+
+	got, err := Prepare(message.Document{HTML: []byte(input)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(got)
+	for _, unwanted := range []string{`id="top"`, `id="mid"`, `id="bottom"`, ".lost"} {
+		if strings.Contains(text, unwanted) {
+			t.Errorf("prepared HTML retained decorative style element content %q", unwanted)
+		}
+	}
+	for _, want := range []string{`id="similar"`, "color:green", `id="text"`, "url(email_mid.png)"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("prepared HTML removed unrelated style content %q", want)
+		}
+	}
+}
+
+func TestPrepareRemovesCommentsReferencingDecorativeURLBasenames(t *testing.T) {
+	const input = `<html><head></head><body>
+<!-- background: url(email_top.png) -->
+<!-- background: URL("../EMAIL_MID.PNG?version=1") -->
+<!-- asset=https://assets.example/path/email_bottom.png#footer -->
+<!-- keep url(email_top.png.bak) -->
+<!-- keep prefixemail_mid.png -->
+<!-- keep email_bottom.png.extra -->
+</body></html>`
+
+	got, err := Prepare(message.Document{HTML: []byte(input)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(got)
+	for _, unwanted := range []string{"background: url(email_top.png)", `URL("../EMAIL_MID.PNG`, "path/email_bottom.png#footer"} {
+		if strings.Contains(text, unwanted) {
+			t.Errorf("prepared HTML retained decorative comment %q", unwanted)
+		}
+	}
+	for _, want := range []string{"url(email_top.png.bak)", "prefixemail_mid.png", "email_bottom.png.extra"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("prepared HTML removed unrelated comment %q", want)
+		}
+	}
+}
+
+func TestPrepareRemovesDecorativeReferencesOnlyFromImageBearingElements(t *testing.T) {
+	const input = `<html><head></head><body>
+<img id="src" src="email_top.png"><img id="srcset" srcset="email_mid.png 1x">
+<table><tr><td id="cell" background="email_bottom.png">remove cell</td></tr></table>
+<video id="video" poster="email_top.png">remove video</video>
+<object id="object" data="email_mid.png">remove object</object>
+<svg><image id="svg-image" href="email_bottom.png"></image></svg>
+<div id="style" style="background:url(email_top.png)">remove style</div>
+</body></html>`
+
+	got, err := Prepare(message.Document{HTML: []byte(input)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(got)
+	for _, unwanted := range []string{`id="src"`, `id="srcset"`, `id="cell"`, `id="video"`, `id="object"`, `id="svg-image"`, `id="style"`, "remove cell", "remove video", "remove object", "remove style"} {
+		if strings.Contains(text, unwanted) {
+			t.Errorf("prepared HTML retained decorative image-bearing element %q", unwanted)
+		}
+	}
+}
+
+func TestPrepareRemovesBodyWithDecorativeBackground(t *testing.T) {
+	const input = `<html><head></head><body id="body" background="email_top.png"><p>remove body content</p></body></html>`
+	got, err := Prepare(message.Document{HTML: []byte(input)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(got)
+	for _, unwanted := range []string{`id="body"`, "remove body content"} {
+		if strings.Contains(text, unwanted) {
+			t.Errorf("prepared HTML retained decorative body content %q", unwanted)
+		}
+	}
+}
+
+func TestPreparePreservesNonImageElementsWithDecorativeNamedAttributes(t *testing.T) {
+	const input = `<html><head></head><body>
+<script id="script" src="email_top.png">keep script</script>
+<iframe id="iframe" src="email_mid.png">keep iframe</iframe>
+<div id="poster" poster="email_bottom.png">keep poster element</div>
+<div id="srcset" srcset="email_top.png 1x">keep srcset element</div>
+<div id="background" background="email_mid.png">keep background element</div>
+<div id="data" data="email_bottom.png">keep data element</div>
+</body></html>`
+
+	got, err := Prepare(message.Document{HTML: []byte(input)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(got)
+	for _, want := range []string{`id="script"`, "keep script", `id="iframe"`, "keep iframe", `id="poster"`, "keep poster element", `id="srcset"`, "keep srcset element", `id="background"`, "keep background element", `id="data"`, "keep data element"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("prepared HTML removed non-image element content %q", want)
+		}
+	}
+	for _, removedAttribute := range []string{`src="email_top.png"`, `src="email_mid.png"`, `poster="email_bottom.png"`, `srcset="email_top.png 1x"`, `background="email_mid.png"`} {
+		if strings.Contains(text, removedAttribute) {
+			t.Errorf("prepared HTML retained normalized remote attribute %q", removedAttribute)
+		}
+	}
+}
+
+func TestPreparePreservesEDEDEDBordersAndTextOnly(t *testing.T) {
+	const input = `<html><head><style>.x{border:1px solid #EDEDED;border-inline-start-color:#ededed;color:#ededed;background:#ededed;outline-color:#ededed;fill:#ededed}</style></head><body style="border-top-color:#EDEDED;background-color:#ededed;color:#EDEDED"></body></html>`
+	got, err := Prepare(message.Document{HTML: []byte(input)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	lower := strings.ToLower(string(got))
+	for _, want := range []string{"border:1px solid #ededed", "border-inline-start-color:#ededed", "border-top-color:#ededed", "color:#ededed"} {
+		if !strings.Contains(lower, want) {
+			t.Errorf("prepared HTML removed approved declaration %q", want)
+		}
+	}
+	for _, unwanted := range []string{"background:#ededed", "background-color:#ededed", "outline-color:#ededed", "fill:#ededed"} {
+		if strings.Contains(lower, unwanted) {
+			t.Errorf("prepared HTML retained non-text declaration %q", unwanted)
+		}
+	}
+}
+
+func TestKeepDeclarationRecognizesOnlyActualEDEDEDBorderProperties(t *testing.T) {
+	for _, property := range []string{
+		"border", "border-color",
+		"border-top", "border-right", "border-bottom", "border-left",
+		"border-top-color", "border-right-color", "border-bottom-color", "border-left-color",
+		"border-block", "border-inline", "border-block-color", "border-inline-color",
+		"border-block-start", "border-block-end", "border-inline-start", "border-inline-end",
+		"border-block-start-color", "border-block-end-color", "border-inline-start-color", "border-inline-end-color",
+	} {
+		if !keepDeclaration(property, "1px solid #EDEDED") {
+			t.Errorf("keepDeclaration(%q) = false, want true", property)
+		}
+	}
+
+	for _, property := range []string{
+		"background", "outline-color", "border-topography", "border-inlinefoo", "border-blocked",
+		"border-top-colorized", "border-inline-started", "my-border", "border-image",
+	} {
+		if keepDeclaration(property, "#EDEDED") {
+			t.Errorf("keepDeclaration(%q) = true, want false", property)
+		}
 	}
 }
 
@@ -483,12 +670,12 @@ func TestPrepareNormalizesUnclosedStylesheetBlock(t *testing.T) {
 		t.Fatal(err)
 	}
 	text := string(got)
-	for _, unwanted := range []string{"assets.example", "border-color"} {
+	for _, unwanted := range []string{"assets.example"} {
 		if strings.Contains(strings.ToLower(text), strings.ToLower(unwanted)) {
 			t.Errorf("prepared HTML retained unsafe unclosed-block CSS %q: %s", unwanted, got)
 		}
 	}
-	for _, want := range []string{"color: purple", "font-weight: bold"} {
+	for _, want := range []string{"color: purple", "border-color: #EDEDED", "font-weight: bold"} {
 		if !strings.Contains(text, want) {
 			t.Errorf("prepared HTML removed safe unclosed-block CSS %q: %s", want, got)
 		}
@@ -658,7 +845,7 @@ func TestPrepareInjectsOnePrintStyleAsFinalHeadChild(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	const css = `@page { size: A5 portrait; margin: 2mm; }
+	const css = `@page { size: A5 portrait; margin: 0; }
 html, body { margin: 0; padding: 0; }`
 	if count := bytes.Count(got, []byte(css)); count != 1 {
 		t.Fatalf("print style count = %d", count)

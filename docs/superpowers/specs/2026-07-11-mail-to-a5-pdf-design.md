@@ -59,10 +59,17 @@ All other HTTP(S) image references are removed from `src`, `srcset`, HTML
 hyperlinks are preserved. CID images remain supported because they are already
 converted to embedded `data:` URLs.
 
+Complete HTML elements are removed when an image-bearing attribute or CSS URL
+references a URL whose basename exactly matches `email_top.png`,
+`email_mid.png`, or `email_bottom.png`, case-insensitively. HTML comments that
+reference one of those exact URL basenames are also removed. Similar basenames
+and unrelated containing elements are preserved.
+
 CSS declarations containing `#EDEDED` are removed case-insensitively unless
-the declaration is the text `color` property. This removes the receipt's gray
-backgrounds and separators while preserving text colors. Other style
-declarations are unchanged.
+the declaration is the text `color` property or an applicable border property,
+including physical and logical border side/color variants. This removes gray
+backgrounds and other non-text uses while preserving text colors and borders.
+Other style declarations are unchanged.
 
 Before measurement, numeric CSS `font-size` declarations in the top-level
 document are increased by 5%. Unsupported or complex `font-size` values remain
@@ -96,16 +103,15 @@ running and makes the set of image resources deterministic before printing.
 
 CDP `PrintToPDF` sets A5 portrait dimensions explicitly (148 x 210 mm), prints
 backgrounds, and omits browser headers and footers. Print CSS removes default
-body margins and applies a 2 mm page margin, yielding a 144 x 206 mm printable
-area while preserving the receipt's remaining HTML and inline styles. CDP PDF
-margins remain zero because CSS owns the page margin.
+body margins and sets the page margin to zero, yielding the full 148 x 210 mm
+printable area while preserving the receipt's remaining HTML and inline styles.
+CDP PDF margins are also zero.
 
-Fitting starts at scale 1.0. Before printing, the renderer measures the complete
-content dimensions against the printable A5 area and reduces the scale when
-needed. Scale never exceeds 1.0 and never falls below 0.50. If all content
-cannot fit at 0.50, conversion fails rather than clipping content. After
-rendering, the program verifies the PDF is nonempty and contains exactly one
-page before moving it to the requested destination.
+Printing uses a fixed scale of 0.83. Before printing, the renderer measures the
+complete content dimensions against the full A5 area and fails if all content
+cannot fit at scale 0.83 rather than shrinking further or clipping content.
+After rendering, the program verifies the PDF is nonempty and contains exactly
+one page before moving it to the requested destination.
 
 Output is first written in the destination directory under a temporary name,
 then atomically renamed to avoid leaving a partial output.
@@ -128,17 +134,19 @@ MIME implementation details across packages.
 
 Unit tests cover nested MIME structures, HTML preference, Base64,
 quoted-printable, charset conversion, malformed messages, missing HTML,
-CID replacement, embedded-logo replacement, remote image removal, style
-cleanup, top-level typography adjustment, nested `srcdoc` isolation, selected
+CID replacement, embedded-logo replacement, decorative element/comment
+removal, remote image removal, style cleanup, top-level typography adjustment,
+nested `srcdoc` isolation, selected
 footer and legal typography, private-marker stripping, missing CID parts,
 resource limits, and output overwrite rules.
 
 Browser integration tests verify HTTP(S) requests are blocked, embedded images
-render without network access, and one-page scaling still works. Tests that
-require Edge or Chrome skip with an explicit reason if neither browser exists.
+render without network access, and fixed-scale one-page fitting works. Tests
+that require Edge or Chrome skip with an explicit reason if neither browser
+exists.
 
 An end-to-end test converts `receipt.eml` and checks that the output is a
-nonempty, exactly one-page A5 portrait PDF within the approved scale range.
+nonempty, exactly one-page A5 portrait PDF reported at scale 0.83.
 
 Release verification runs all tests, builds a stripped Windows executable, and
 fails if its size exceeds 20 MB.

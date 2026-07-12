@@ -50,8 +50,8 @@ func TestRenderDisablesJavaScript(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Render() error = %v", err)
 	}
-	if result.Scale != maxScale {
-		t.Fatalf("Render() scale = %v, want %v when script is disabled", result.Scale, maxScale)
+	if result.Scale != 0.83 {
+		t.Fatalf("Render() scale = %v, want 0.83 when script is disabled", result.Scale)
 	}
 }
 
@@ -82,28 +82,28 @@ func TestRenderPreparedDeclarativeShadowTemplatesRemainInert(t *testing.T) {
 	if hasOpenShadowRoot {
 		t.Fatal("prepared declarative template created an open shadow root")
 	}
-	if result.Scale != maxScale {
-		t.Fatalf("Render() scale = %v, want %v for inert templates", result.Scale, maxScale)
+	if result.Scale != 0.83 {
+		t.Fatalf("Render() scale = %v, want 0.83 for inert templates", result.Scale)
 	}
 }
 
-func TestRenderRejectsScaleBelowMinimum(t *testing.T) {
+func TestRenderRejectsContentThatExceedsFixedScale(t *testing.T) {
 	executable := testBrowser(t)
-	height := math.Ceil(printableHeight/minScale) + 1
+	height := math.Ceil(printableHeight/0.83) + 1
 	_, err := Render(context.Background(), executable, writeHTML(t, fmt.Sprintf(`<div style="height:%vpx;width:400px">too long</div>`, height)))
 	if err == nil || err.Error() != "content cannot fit one A5 page" {
 		t.Fatalf("Render() error = %v, want content cannot fit one A5 page", err)
 	}
 }
 
-func TestRenderLongDocumentUsesIntermediateScale(t *testing.T) {
+func TestRenderUsesFixedScale(t *testing.T) {
 	executable := testBrowser(t)
-	result, err := Render(context.Background(), executable, writeHTML(t, `<div style="height:1000px;width:400px">long receipt</div>`))
+	result, err := Render(context.Background(), executable, writeHTML(t, `<div style="height:400px;width:400px">receipt</div>`))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Scale <= minScale || result.Scale >= maxScale {
-		t.Fatalf("Render() scale = %v, want %v < scale < %v", result.Scale, minScale, maxScale)
+	if result.Scale != 0.83 {
+		t.Fatalf("Render() scale = %v, want 0.83", result.Scale)
 	}
 }
 
@@ -125,32 +125,24 @@ func TestRenderOrdinaryContentUsesMaximumScale(t *testing.T) {
 	if viewport.OuterWidth > printableWidth || viewport.OuterHeight > printableHeight {
 		t.Fatalf("browser outer viewport = %vx%v, exceeds printable area %vx%v", viewport.OuterWidth, viewport.OuterHeight, printableWidth, printableHeight)
 	}
-	if result.Scale != maxScale {
-		t.Fatalf("Render() scale = %v, want %v", result.Scale, maxScale)
+	if result.Scale != 0.83 {
+		t.Fatalf("Render() scale = %v, want 0.83", result.Scale)
 	}
 }
 
-func TestRenderFitsFixedOverflow(t *testing.T) {
+func TestRenderRejectsFixedOverflowBeyondFixedScale(t *testing.T) {
 	executable := testBrowser(t)
-	result, err := Render(context.Background(), executable, writeHTML(t, `<div style="position:fixed;left:600px;top:0;width:100px;height:20px">fixed</div>`))
-	if err != nil {
-		t.Fatal(err)
-	}
-	want := printableWidth / 700
-	if math.Abs(result.Scale-want) > 0.001 {
-		t.Fatalf("Render() scale = %v, want approximately %v", result.Scale, want)
+	_, err := Render(context.Background(), executable, writeHTML(t, `<div style="position:fixed;left:700px;top:0;width:100px;height:20px">fixed</div>`))
+	if err == nil || err.Error() != "content cannot fit one A5 page" {
+		t.Fatalf("Render() error = %v, want content cannot fit one A5 page", err)
 	}
 }
 
-func TestRenderFitsTransformedOverflow(t *testing.T) {
+func TestRenderRejectsTransformedOverflowBeyondFixedScale(t *testing.T) {
 	executable := testBrowser(t)
-	result, err := Render(context.Background(), executable, writeHTML(t, `<div style="width:100px;height:20px;transform:translateX(600px)">transformed</div>`))
-	if err != nil {
-		t.Fatal(err)
-	}
-	want := printableWidth / 700
-	if math.Abs(result.Scale-want) > 0.001 {
-		t.Fatalf("Render() scale = %v, want approximately %v", result.Scale, want)
+	_, err := Render(context.Background(), executable, writeHTML(t, `<div style="width:100px;height:20px;transform:translateX(700px)">transformed</div>`))
+	if err == nil || err.Error() != "content cannot fit one A5 page" {
+		t.Fatalf("Render() error = %v, want content cannot fit one A5 page", err)
 	}
 }
 
@@ -172,15 +164,12 @@ func TestRenderRejectsFarPositiveDirectTextFromZeroAreaContainer(t *testing.T) {
 	}
 }
 
-func TestRenderFitsTransformedDirectTextFromZeroAreaContainer(t *testing.T) {
+func TestRenderRejectsTransformedDirectTextBeyondFixedScale(t *testing.T) {
 	executable := testBrowser(t)
 	body := `<div style="position:fixed;left:0;top:0;width:0;height:0;white-space:nowrap;transform:translateX(600px)">transformed text</div>`
-	result, err := Render(context.Background(), executable, writeHTML(t, body))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if result.Scale <= minScale || result.Scale >= maxScale {
-		t.Fatalf("Render() scale = %v, want %v < scale < %v", result.Scale, minScale, maxScale)
+	_, err := Render(context.Background(), executable, writeHTML(t, body))
+	if err == nil || err.Error() != "content cannot fit one A5 page" {
+		t.Fatalf("Render() error = %v, want content cannot fit one A5 page", err)
 	}
 }
 
@@ -191,8 +180,8 @@ func TestRenderFitsNestedTextWithoutElementRects(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Scale <= minScale || result.Scale >= maxScale {
-		t.Fatalf("Render() scale = %v, want %v < scale < %v", result.Scale, minScale, maxScale)
+	if result.Scale != 0.83 {
+		t.Fatalf("Render() scale = %v, want 0.83", result.Scale)
 	}
 }
 
@@ -202,8 +191,8 @@ func TestRenderAcceptsEmptyZeroAreaElement(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Scale != maxScale {
-		t.Fatalf("Render() scale = %v, want %v", result.Scale, maxScale)
+	if result.Scale != 0.83 {
+		t.Fatalf("Render() scale = %v, want 0.83", result.Scale)
 	}
 }
 
@@ -232,8 +221,8 @@ func TestRenderFitsTransformedTextWithVisibilityOverride(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Scale <= minScale || result.Scale >= maxScale {
-		t.Fatalf("Render() scale = %v, want %v < scale < %v", result.Scale, minScale, maxScale)
+	if result.Scale != 0.83 {
+		t.Fatalf("Render() scale = %v, want 0.83", result.Scale)
 	}
 }
 
@@ -244,8 +233,8 @@ func TestRenderIgnoresFullyHiddenTextGeometry(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Scale != maxScale {
-		t.Fatalf("Render() scale = %v, want %v", result.Scale, maxScale)
+	if result.Scale != 0.83 {
+		t.Fatalf("Render() scale = %v, want 0.83", result.Scale)
 	}
 }
 
@@ -354,8 +343,8 @@ func TestRenderAcceptsStaticTimingCSS(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Scale != maxScale {
-		t.Fatalf("Render() scale = %v, want %v", result.Scale, maxScale)
+	if result.Scale != 0.83 {
+		t.Fatalf("Render() scale = %v, want 0.83", result.Scale)
 	}
 }
 
@@ -398,7 +387,7 @@ func TestRenderPreparedEmbeddedLogosOffline(t *testing.T) {
 	}))
 	defer server.Close()
 
-	prepared, err := document.Prepare(message.Document{HTML: []byte(fmt.Sprintf(`<html><head></head><body>
+	prepared, err := document.Prepare(message.Document{HTML: []byte(fmt.Sprintf(`<html><head><style>img{max-width:500px;height:auto}</style></head><body>
 <img id="lockup" src="%s/google-play-crm-lockup-ic-h-transparent-w688px-h140px-2x.png">
 <img id="logo" src="%s/google-play-crm-logo-transparent-w192px-h192px-2x.png">
 </body></html>`, server.URL, server.URL))})
@@ -437,38 +426,38 @@ Array.from(document.querySelectorAll('#lockup, #logo')).map(image => {
 	}
 }
 
-func TestScaleToFitAcceptsExactMinimumBoundary(t *testing.T) {
-	scale, err := scaleToFit(printableWidth/minScale, printableHeight/minScale)
+func TestScaleToFitAcceptsExactFixedScaleBoundary(t *testing.T) {
+	scale, err := scaleToFit(printableWidth/0.83, printableHeight/0.83)
 	if err != nil {
 		t.Fatalf("scaleToFit() error = %v", err)
 	}
-	if scale != minScale {
-		t.Fatalf("scaleToFit() = %v, want exactly %v", scale, minScale)
+	if scale != 0.83 {
+		t.Fatalf("scaleToFit() = %v, want exactly 0.83", scale)
 	}
 
-	_, err = scaleToFit(printableWidth/minScale, math.Nextafter(printableHeight/minScale, math.Inf(1)))
+	_, err = scaleToFit(printableWidth/0.83, math.Nextafter(printableHeight/0.83, math.Inf(1)))
 	if err == nil || err.Error() != "content cannot fit one A5 page" {
 		t.Fatalf("scaleToFit() above boundary error = %v, want content cannot fit one A5 page", err)
 	}
 }
 
-func TestPrintableAreaAccountsForTwoMillimeterPageMargins(t *testing.T) {
+func TestPrintableAreaUsesFullA5Page(t *testing.T) {
 	const pixelsPerMillimeter = 96.0 / 25.4
-	if want := 144 * pixelsPerMillimeter; printableWidth != want {
+	if want := 148 * pixelsPerMillimeter; printableWidth != want {
 		t.Fatalf("printableWidth = %v, want %v", printableWidth, want)
 	}
-	if want := 206 * pixelsPerMillimeter; printableHeight != want {
+	if want := 210 * pixelsPerMillimeter; printableHeight != want {
 		t.Fatalf("printableHeight = %v, want %v", printableHeight, want)
 	}
 }
 
-func TestScaleToFitCapsAtOne(t *testing.T) {
+func TestScaleToFitAlwaysReturnsFixedScale(t *testing.T) {
 	scale, err := scaleToFit(printableWidth/2, printableHeight/2)
 	if err != nil {
 		t.Fatalf("scaleToFit() error = %v", err)
 	}
-	if scale != 1.0 {
-		t.Fatalf("scaleToFit() = %v, want 1", scale)
+	if scale != 0.83 {
+		t.Fatalf("scaleToFit() = %v, want 0.83", scale)
 	}
 }
 

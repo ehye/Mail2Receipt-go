@@ -63,7 +63,7 @@ func TestReceiptEndToEnd(t *testing.T) {
 		t.Fatal("renderer did not report a numeric scale")
 	}
 	if !validReportedScale(scale) {
-		t.Fatalf("renderer scale = %v, want 0.50 <= scale <= 1.0", scale)
+		t.Fatalf("renderer scale = %v, want 0.83", scale)
 	}
 	t.Logf("scale: %.2f", scale)
 }
@@ -76,6 +76,17 @@ func TestValidReportedScaleRejectsNonFiniteValues(t *testing.T) {
 	}
 }
 
+func TestValidReportedScaleAcceptsOnlyFixedScale(t *testing.T) {
+	for _, scale := range []float64{0.50, 0.829999, 0.830001, 1.0} {
+		if validReportedScale(scale) {
+			t.Fatalf("validReportedScale(%v) = true, want false", scale)
+		}
+	}
+	if !validReportedScale(0.83) {
+		t.Fatal("validReportedScale(0.83) = false, want true")
+	}
+}
+
 func validReportedScale(scale float64) bool {
-	return !math.IsNaN(scale) && !math.IsInf(scale, 0) && scale >= 0.50 && scale <= 1.0
+	return !math.IsNaN(scale) && !math.IsInf(scale, 0) && scale == 0.83
 }

@@ -18,10 +18,9 @@ import (
 )
 
 const (
-	maxScale        = 1.0
-	minScale        = 0.50
-	printableWidth  = 144 * 96 / 25.4
-	printableHeight = 206 * 96 / 25.4
+	fixedScale      = 0.83
+	printableWidth  = 148 * 96 / 25.4
+	printableHeight = 210 * 96 / 25.4
 )
 
 var pdfPagePattern = regexp.MustCompile(`/Type\s*/Page(?:\s|[/<])`)
@@ -258,9 +257,9 @@ func renderWithInspection(ctx context.Context, executable, htmlPath string, insp
 }
 
 func scaleToFit(width, height float64) (float64, error) {
-	scale := math.Min(maxScale, math.Min(printableWidth/width, printableHeight/height))
-	if math.IsNaN(scale) || math.IsInf(scale, 0) || scale < minScale {
+	if math.IsNaN(width) || math.IsNaN(height) || math.IsInf(width, 0) || math.IsInf(height, 0) ||
+		width < 0 || height < 0 || fixedScale > printableWidth/width || fixedScale > printableHeight/height {
 		return 0, errors.New("content cannot fit one A5 page")
 	}
-	return scale, nil
+	return fixedScale, nil
 }
