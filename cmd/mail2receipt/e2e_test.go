@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"io"
+	"math"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -61,8 +62,20 @@ func TestReceiptEndToEnd(t *testing.T) {
 	if err != nil {
 		t.Fatal("renderer did not report a numeric scale")
 	}
-	if scale < 0.50 || scale > 0.79 {
+	if !validReportedScale(scale) {
 		t.Fatalf("renderer scale = %v, want 0.50 <= scale <= 0.79", scale)
 	}
 	t.Logf("scale: %.2f", scale)
+}
+
+func TestValidReportedScaleRejectsNonFiniteValues(t *testing.T) {
+	for _, scale := range []float64{math.NaN(), math.Inf(-1), math.Inf(1)} {
+		if validReportedScale(scale) {
+			t.Fatalf("validReportedScale(%v) = true, want false", scale)
+		}
+	}
+}
+
+func validReportedScale(scale float64) bool {
+	return !math.IsNaN(scale) && !math.IsInf(scale, 0) && scale >= 0.50 && scale <= 0.79
 }

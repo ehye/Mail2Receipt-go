@@ -109,19 +109,46 @@ func TestRenderFitsTransformedOverflow(t *testing.T) {
 	}
 }
 
-func TestRenderFitsPrintOnlyPseudoElementOverflow(t *testing.T) {
+func TestRenderRejectsUnmeasurablePseudoElementGeometry(t *testing.T) {
 	executable := testBrowser(t)
-	body := `<style>
-#print-overflow::after{content:none}
-@media print{#print-overflow::after{content:"print";position:fixed;left:600px;top:0;width:100px;height:20px}}
-</style><div id="print-overflow"></div>`
-	result, err := Render(context.Background(), executable, writeHTML(t, body))
-	if err != nil {
-		t.Fatal(err)
+	tests := []struct {
+		name string
+		css  string
+	}{
+		{"fixed transformed", `content:"x";position:fixed;left:10px;top:10px;width:20px;height:20px;transform:scale(2)`},
+		{"fixed content sized", `content:"content sized";position:fixed;left:10px;top:10px;width:auto;height:auto`},
+		{"fixed border and padding", `content:"x";position:fixed;left:600px;top:0;width:10px;height:10px;border:20px solid;padding:20px`},
 	}
-	want := printableWidth / 700
-	if math.Abs(result.Scale-want) > 0.001 {
-		t.Fatalf("Render() scale = %v, want approximately %v", result.Scale, want)
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			body := fmt.Sprintf(`<style>@media print{#generated::after{%s}}</style><div id="generated"></div>`, test.css)
+			_, err := Render(context.Background(), executable, writeHTML(t, body))
+			if err == nil || err.Error() != "content cannot fit one A5 page" {
+				t.Fatalf("Render() error = %v, want content cannot fit one A5 page", err)
+			}
+		})
+	}
+}
+
+func TestRenderRejectsUnmeasuredInkOverflow(t *testing.T) {
+	executable := testBrowser(t)
+	tests := []struct {
+		name string
+		body string
+	}{
+		{"box shadow", `<div style="box-shadow:0 0 20px black">shadow</div>`},
+		{"text shadow", `<div style="text-shadow:20px 0 black">shadow</div>`},
+		{"filter", `<div style="filter:drop-shadow(20px 0 black)">filter</div>`},
+		{"outline", `<div style="outline:10px solid black">outline</div>`},
+		{"pseudo shadow", `<style>#generated::after{content:"x";box-shadow:0 0 20px black}</style><div id="generated"></div>`},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			_, err := Render(context.Background(), executable, writeHTML(t, test.body))
+			if err == nil || err.Error() != "content cannot fit one A5 page" {
+				t.Fatalf("Render() error = %v, want content cannot fit one A5 page", err)
+			}
+		})
 	}
 }
 

@@ -116,10 +116,16 @@ func renderWithInspection(ctx context.Context, executable, htmlPath string, insp
   const visible = style => style.display !== 'none' &&
     style.visibility !== 'hidden' && style.visibility !== 'collapse' &&
     Number.parseFloat(style.opacity || '1') !== 0;
+  const hasInkOverflow = style => style.boxShadow !== 'none' ||
+    style.textShadow !== 'none' || style.filter !== 'none' ||
+    (style.outlineStyle !== 'none' && Number.parseFloat(style.outlineWidth) !== 0) ||
+    Number.parseFloat(style.webkitTextStrokeWidth || '0') !== 0 ||
+    (style.stroke !== 'none' && Number.parseFloat(style.strokeWidth || '0') !== 0);
 
   for (const element of document.querySelectorAll('*')) {
     const style = getComputedStyle(element);
     if (visible(style)) {
+      if (hasInkOverflow(style)) valid = false;
       for (const rect of element.getClientRects()) {
         if (rect.width > 0 || rect.height > 0) {
           include(rect.left + scrollX, rect.top + scrollY, rect.right + scrollX, rect.bottom + scrollY);
@@ -131,21 +137,9 @@ func renderWithInspection(ctx context.Context, executable, htmlPath string, insp
       const pseudoStyle = getComputedStyle(element, pseudo);
       if (!visible(pseudoStyle) || pseudoStyle.content === 'none' || pseudoStyle.content === 'normal') continue;
 
-      // CSSOM exposes pseudo-element styles but not their client rects. Normal-flow
-      // pseudo overflow is reflected by scroll dimensions; fixed boxes are not.
-      if (pseudoStyle.position === 'fixed') {
-        const width = Number.parseFloat(pseudoStyle.width);
-        const height = Number.parseFloat(pseudoStyle.height);
-        const leftValue = Number.parseFloat(pseudoStyle.left);
-        const rightValue = Number.parseFloat(pseudoStyle.right);
-        const topValue = Number.parseFloat(pseudoStyle.top);
-        const bottomValue = Number.parseFloat(pseudoStyle.bottom);
-        const left = Number.isFinite(leftValue) ? leftValue : innerWidth - rightValue - width;
-        const top = Number.isFinite(topValue) ? topValue : innerHeight - bottomValue - height;
-        if (Number.isFinite(width) && Number.isFinite(height) && Number.isFinite(left) && Number.isFinite(top)) {
-          include(left + scrollX, top + scrollY, left + width + scrollX, top + height + scrollY);
-        }
-      }
+      // CSSOM does not expose pseudo-element client rectangles. Reject generated
+      // content rather than infer bounds that can omit transforms or visual ink.
+      valid = false;
     }
   }
   return {width: maxRight, height: maxBottom, valid: valid && minLeft >= 0 && minTop >= 0};
