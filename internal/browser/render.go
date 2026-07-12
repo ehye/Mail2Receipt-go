@@ -167,15 +167,29 @@ func renderWithInspection(ctx context.Context, executable, htmlPath string, insp
     unsafeTransition(style.transitionProperty, style.transitionDuration, style.transitionDelay) ||
     (typeof style.webkitTransitionProperty === 'string' &&
       unsafeTransition(style.webkitTransitionProperty, style.webkitTransitionDuration, style.webkitTransitionDelay));
+  const acceptedElements = new WeakSet();
 
   for (const element of document.querySelectorAll('*')) {
     const style = getComputedStyle(element);
-    if (hasTimeVariation(style)) valid = false;
+    const timeVarying = hasTimeVariation(style);
+    const surfaceRejected = style.display === 'list-item' || opaqueNamespace(element) ||
+      opaqueTags.has(element.localName) || hasInkOverflow(style);
+    if (timeVarying) valid = false;
     if (visible(style)) {
-      if (style.display === 'list-item' || opaqueNamespace(element) ||
-          opaqueTags.has(element.localName) || hasInkOverflow(style)) valid = false;
+      if (surfaceRejected) valid = false;
       for (const rect of element.getClientRects()) {
-        if (rect.width > 0 || rect.height > 0) {
+        include(rect.left + scrollX, rect.top + scrollY, rect.right + scrollX, rect.bottom + scrollY);
+      }
+    }
+
+    const parentAccepted = element.parentElement === null || acceptedElements.has(element.parentElement);
+    if (parentAccepted && visible(style) && !surfaceRejected && !timeVarying) {
+      acceptedElements.add(element);
+      for (const node of element.childNodes) {
+        if (node.nodeType !== Node.TEXT_NODE || !/\S/.test(node.data)) continue;
+        const range = document.createRange();
+        range.selectNodeContents(node);
+        for (const rect of range.getClientRects()) {
           include(rect.left + scrollX, rect.top + scrollY, rect.right + scrollX, rect.bottom + scrollY);
         }
       }

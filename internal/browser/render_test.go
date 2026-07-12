@@ -109,6 +109,59 @@ func TestRenderFitsTransformedOverflow(t *testing.T) {
 	}
 }
 
+func TestRenderRejectsNegativeDirectTextFromZeroAreaContainer(t *testing.T) {
+	executable := testBrowser(t)
+	body := `<div style="position:fixed;left:-1px;top:0;width:0;height:0;white-space:nowrap">negative text</div>`
+	_, err := Render(context.Background(), executable, writeHTML(t, body))
+	if err == nil || err.Error() != "content cannot fit one A5 page" {
+		t.Fatalf("Render() error = %v, want content cannot fit one A5 page", err)
+	}
+}
+
+func TestRenderRejectsFarPositiveDirectTextFromZeroAreaContainer(t *testing.T) {
+	executable := testBrowser(t)
+	body := `<div style="position:fixed;left:1100px;top:0;width:0;height:0;white-space:nowrap">far positive text</div>`
+	_, err := Render(context.Background(), executable, writeHTML(t, body))
+	if err == nil || err.Error() != "content cannot fit one A5 page" {
+		t.Fatalf("Render() error = %v, want content cannot fit one A5 page", err)
+	}
+}
+
+func TestRenderFitsTransformedDirectTextFromZeroAreaContainer(t *testing.T) {
+	executable := testBrowser(t)
+	body := `<div style="position:fixed;left:0;top:0;width:0;height:0;white-space:nowrap;transform:translateX(600px)">transformed text</div>`
+	result, err := Render(context.Background(), executable, writeHTML(t, body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Scale <= minScale || result.Scale >= maxScale {
+		t.Fatalf("Render() scale = %v, want %v < scale < %v", result.Scale, minScale, maxScale)
+	}
+}
+
+func TestRenderFitsNestedTextWithoutElementRects(t *testing.T) {
+	executable := testBrowser(t)
+	body := `<div style="position:fixed;left:600px;top:0;width:0;height:0;white-space:nowrap"><span style="display:contents"><b style="display:contents">nested text</b></span></div>`
+	result, err := Render(context.Background(), executable, writeHTML(t, body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Scale <= minScale || result.Scale >= maxScale {
+		t.Fatalf("Render() scale = %v, want %v < scale < %v", result.Scale, minScale, maxScale)
+	}
+}
+
+func TestRenderAcceptsEmptyZeroAreaElement(t *testing.T) {
+	executable := testBrowser(t)
+	result, err := Render(context.Background(), executable, writeHTML(t, `<div style="width:0;height:0"></div>`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Scale != maxScale {
+		t.Fatalf("Render() scale = %v, want %v", result.Scale, maxScale)
+	}
+}
+
 func TestRenderRejectsUnmeasurablePseudoElementGeometry(t *testing.T) {
 	executable := testBrowser(t)
 	tests := []struct {
