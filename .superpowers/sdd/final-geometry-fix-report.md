@@ -158,3 +158,53 @@ This is an enumerated policy for the currently identified browser rendering mech
 - Print media remains enabled before inspection. HTTP(S) blocking, no-proxy startup, disabled JavaScript, A5 portrait output, inclusive scale bounds, and exact one-page validation are unchanged.
 - The approved receipt passes this policy without fixture disclosure.
 - The conservative exclusions intentionally reject safe-looking lists and controls. Newly introduced CSS/browser paint mechanisms require explicit review and may need another rejection rule; no unbounded safety claim is made.
+
+## Animation And Transition TOCTOU Follow-up
+
+Code/test commit: `9d6d23e` (`Reject time-varying print styles`).
+
+### TDD Evidence
+
+RED command:
+
+```text
+go test ./internal/browser -count=1 -run "TestRender(RejectsTimeVaryingCSS|AcceptsStaticTimingCSS)$" -v
+```
+
+Before implementation, moving transform animation, delayed animation, paused/infinite animation, print-media transition duration, and print-media transition delay all rendered instead of returning the generic cannot-fit error. The comma-separated zero-duration/no-animation control passed.
+
+GREEN evidence:
+
+```text
+go test ./internal/browser -count=1 -v
+PASS (30.746s package result)
+
+go test ./cmd/mail2receipt -count=1 -run TestReceiptEndToEnd -v -timeout 90s
+PASS; reported scale 0.77
+
+go test ./... -count=1 -timeout 120s
+PASS for all packages
+
+go vet ./...
+PASS (no output)
+
+git diff --check
+PASS; only line-ending conversion warnings were emitted
+```
+
+### Exact Timing Policy
+
+- During print-media inspection, reject every element whose computed `animation-name` list contains any name other than `none`. Delay, duration, iteration count, and play state do not make a named animation acceptable.
+- Apply the same animation-name rule to inspected `::before`, `::after`, `::marker`, `::first-letter`, and `::first-line` styles.
+- Reject transitions when the computed property list contains a property other than `none` and any computed duration or delay component is nonzero. This includes zero-duration transitions with a nonzero delay.
+- Parse every comma-separated duration and delay component as a finite CSS time in `s` or `ms`. Empty, malformed, non-finite, or otherwise unparseable computed lists fail closed.
+- Check the standard computed animation/transition properties and WebKit-prefixed computed aliases when Chromium exposes them.
+- Zero-duration, zero-delay transitions and `animation-name:none` remain accepted when no other rendering-surface rejection applies.
+- Timing checks occur before element visibility filtering, preventing an animation that changes visibility from evading inspection. No waits, sleeps, timing sampling, or race-prone style freezing are used.
+
+### Self-review And Residual Concern
+
+- Print-media emulation still precedes inspection, so print-only animation and transition definitions are evaluated.
+- Network blocking, no-proxy startup, disabled JavaScript, geometry union, conservative paint exclusions, A5 output, inclusive scale limits, and exact one-page validation are unchanged.
+- The approved receipt remains accepted without exposing fixture content.
+- The policy deliberately rejects harmless named animations and delayed zero-duration transitions because their stability cannot be guaranteed between measurement and printing.
