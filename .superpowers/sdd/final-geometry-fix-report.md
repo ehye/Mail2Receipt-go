@@ -104,3 +104,57 @@ PASS; only line-ending conversion warnings were emitted
 ### Residual Concerns
 
 The intentionally conservative pseudo-element policy can reject otherwise harmless generated content. This is required fail-closed behavior because browser CSSOM does not expose exact pseudo-element visual bounds. The approved real receipt does not trigger the rejection and continues to pass end-to-end.
+
+## Conservative Rendering Surface Follow-up
+
+Code/test commit: `6b294a7` (`Restrict accepted browser paint surface`).
+
+### TDD Evidence
+
+RED command:
+
+```text
+go test ./internal/browser -count=1 -run "TestRenderRejects(UnmeasurablePseudoElementGeometry|UnsupportedRenderingSurfaces|AdditionalPaintOverflow)$" -v
+```
+
+Before implementation, ordinary list markers, SVG with and without marker paint, a native input, positive border-image outset, Chromium box reflection, and ink effects on marker/first-letter/first-line were accepted. Each new adversarial case failed with an unexpected nil error. The added `::before` symmetry case passed because broad before/after rejection was already present.
+
+GREEN evidence:
+
+```text
+go test ./internal/browser -count=1 -v
+PASS (24.733s package result)
+
+go test ./cmd/mail2receipt -run TestReceiptEndToEnd -v -timeout 90s
+PASS; reported scale 0.77
+
+go test ./... -count=1 -timeout 120s
+PASS for all packages
+
+go vet ./...
+PASS (no output)
+
+git diff --check
+PASS; only line-ending conversion warnings were emitted
+```
+
+### Exact Conservative Policy
+
+The renderer accepts visible ordinary HTML boxes and `img` elements when their document-coordinate client rectangles and document scroll dimensions are finite and nonnegative and none of the following enumerated rejection rules applies:
+
+- Reject computed `display:list-item`, including otherwise ordinary lists, rather than relying on `::marker` content reporting or potentially incomplete marker bounds.
+- Reject visible SVG and MathML namespace elements.
+- Reject visible `audio`, `button`, `canvas`, `embed`, `iframe`, `input`, `meter`, `object`, `optgroup`, `option`, `progress`, `select`, `textarea`, and `video` elements because browser-owned/internal paint cannot be enumerated reliably.
+- Reject every active generated `::before` and `::after` pseudo-element because CSSOM exposes computed style but no exact pseudo client rectangles.
+- Inspect computed styles for `::marker`, `::first-letter`, and `::first-line` where Chromium exposes them, without using marker `content` as an activity or safety signal.
+- Reject visible element or inspected pseudo styles with box shadow, text shadow, any filter, nonzero outline, nonzero WebKit text stroke, nonzero SVG stroke, any nonzero/non-finite `border-image-outset` component, or non-`none` WebKit box reflection.
+- Continue rejecting non-finite geometry, negative left/top visual extents, and content that needs a scale below 0.50. Positive right/bottom element extents continue to participate in fitting up to scale 0.79.
+
+This is an enumerated policy for the currently identified browser rendering mechanisms. It does not claim automatic coverage of future CSS pseudos, properties, or browser paint features.
+
+### Self-review And Residual Concern
+
+- Images remain allowed and are measured by client rectangles; prepared receipt image trust and offline controls are unchanged.
+- Print media remains enabled before inspection. HTTP(S) blocking, no-proxy startup, disabled JavaScript, A5 portrait output, inclusive scale bounds, and exact one-page validation are unchanged.
+- The approved receipt passes this policy without fixture disclosure.
+- The conservative exclusions intentionally reject safe-looking lists and controls. Newly introduced CSS/browser paint mechanisms require explicit review and may need another rejection rule; no unbounded safety claim is made.
