@@ -9,7 +9,6 @@ import (
 	_ "image/gif"
 	_ "image/jpeg"
 	_ "image/png"
-	"regexp"
 	"strconv"
 	"strings"
 	"unicode"
@@ -25,10 +24,8 @@ html, body { margin: 0; padding: 0; }`
 const maxSrcdocDepth = 4
 
 var (
-	ErrMissingCID   = errors.New("referenced CID is missing")
-	ErrNonImageCID  = errors.New("referenced CID is not an image")
-	cssURLPattern   = regexp.MustCompile(`(?i)url\(\s*(?:"[^"]*"|'[^']*'|[^)]*)\s*\)`)
-	imageSetPattern = regexp.MustCompile(`(?i)(?:-webkit-)?image-set\s*\(`)
+	ErrMissingCID  = errors.New("referenced CID is missing")
+	ErrNonImageCID = errors.New("referenced CID is not an image")
 )
 
 func Prepare(doc message.Document) ([]byte, error) {
@@ -187,7 +184,7 @@ func replaceCID(value string, assets map[string]message.Asset) (string, error) {
 	if wantFormat == "" {
 		return "", ErrNonImageCID
 	}
-	_, format, err := image.DecodeConfig(bytes.NewReader(asset.Data))
+	_, format, err := image.Decode(bytes.NewReader(asset.Data))
 	if err != nil || format != wantFormat {
 		return "", ErrNonImageCID
 	}
@@ -278,69 +275,27 @@ func isASCIISpace(value byte) bool {
 }
 
 func replaceStyleURLs(value string, assets map[string]message.Asset) (string, error) {
-	var replaceErr error
-	replaced := cssURLPattern.ReplaceAllStringFunc(value, func(match string) string {
-		if replaceErr != nil {
-			return match
+	resources := scanCSSResources(value)
+	for pos := len(resources) - 1; pos >= 0; pos-- {
+		resource := resources[pos]
+		if resource.kind != cssURLResource {
+			continue
 		}
-		open := strings.IndexByte(match, '(')
-		inner := strings.TrimSpace(match[open+1 : len(match)-1])
-		quote := byte(0)
-		if len(inner) >= 2 && (inner[0] == '\'' || inner[0] == '"') && inner[len(inner)-1] == inner[0] {
-			quote = inner[0]
-			inner = inner[1 : len(inner)-1]
-		}
-		normalized, keep, err := normalizeImageReference(inner, assets)
+		normalized, keep, err := normalizeImageReference(resource.value, assets)
 		if err != nil {
-			replaceErr = err
-			return match
+			return "", err
 		}
-		if !keep || normalized == inner {
-			return match
+		if keep && normalized != resource.value {
+			value = value[:resource.start] + `url("` + normalized + `")` + value[resource.end:]
 		}
-		if quote != 0 {
-			return "url(" + string(quote) + normalized + string(quote) + ")"
-		}
-		return "url(" + normalized + ")"
-	})
-	return replaced, replaceErr
+	}
+	return value, nil
 }
 
 func containsNonEmbeddedCSSURL(value string) bool {
-	decoded := decodeCSSEscapes(value)
-	for _, match := range cssURLPattern.FindAllString(decoded, -1) {
-		open := strings.IndexByte(match, '(')
-		inner := strings.Trim(strings.TrimSpace(match[open+1:len(match)-1]), "'\"")
-		if !isImageDataURL(inner) {
+	for _, resource := range scanCSSResources(value) {
+		if !isImageDataURL(resource.value) {
 			return true
-		}
-	}
-	return containsNonEmbeddedImageSetString(decoded)
-}
-
-func containsNonEmbeddedImageSetString(value string) bool {
-	for _, location := range imageSetPattern.FindAllStringIndex(value, -1) {
-		if location[0] > 0 && isCSSIdentifierByte(value[location[0]-1]) {
-			continue
-		}
-		open := location[1] - 1
-		close := matchingCSSParen(value, open)
-		if close < 0 {
-			return true
-		}
-		for _, candidate := range splitCSS(value[open+1:close], ',') {
-			candidate = trimCSSSpaceAndComments(candidate)
-			if len(candidate) == 0 || candidate[0] != '\'' && candidate[0] != '"' {
-				continue
-			}
-			quote := candidate[0]
-			end := 1
-			for end < len(candidate) && candidate[end] != quote {
-				end++
-			}
-			if end == len(candidate) || !isImageDataURL(candidate[1:end]) {
-				return true
-			}
 		}
 	}
 	return false
@@ -428,77 +383,197 @@ func normalizeDeclarations(value string, assets map[string]message.Asset) (strin
 }
 
 func validateCSSCIDReferences(value string, assets map[string]message.Asset) error {
-	decoded := decodeCSSEscapes(value)
-	for _, match := range cssURLPattern.FindAllString(decoded, -1) {
-		open := strings.IndexByte(match, '(')
-		inner := strings.Trim(strings.TrimSpace(match[open+1:len(match)-1]), "'\"")
-		if _, err := replaceCID(inner, assets); err != nil {
+	for _, resource := range scanCSSResources(value) {
+		if _, err := replaceCID(resource.value, assets); err != nil {
 			return err
-		}
-	}
-	for _, location := range imageSetPattern.FindAllStringIndex(decoded, -1) {
-		if location[0] > 0 && isCSSIdentifierByte(decoded[location[0]-1]) {
-			continue
-		}
-		open := location[1] - 1
-		close := matchingCSSParen(decoded, open)
-		if close < 0 {
-			continue
-		}
-		for _, candidate := range splitCSS(decoded[open+1:close], ',') {
-			candidate = trimCSSSpaceAndComments(candidate)
-			if len(candidate) == 0 || candidate[0] != '\'' && candidate[0] != '"' {
-				continue
-			}
-			quote := candidate[0]
-			end := 1
-			for end < len(candidate) && candidate[end] != quote {
-				end++
-			}
-			if end < len(candidate) {
-				if _, err := replaceCID(candidate[1:end], assets); err != nil {
-					return err
-				}
-			}
 		}
 	}
 	return nil
 }
 
 func containsSourceDataImage(value string) bool {
-	decoded := decodeCSSEscapes(value)
-	for _, match := range cssURLPattern.FindAllString(decoded, -1) {
-		open := strings.IndexByte(match, '(')
-		inner := strings.Trim(strings.TrimSpace(match[open+1:len(match)-1]), "'\"")
-		if isImageDataURL(inner) {
+	for _, resource := range scanCSSResources(value) {
+		if isImageDataURL(resource.value) {
 			return true
-		}
-	}
-	for _, location := range imageSetPattern.FindAllStringIndex(decoded, -1) {
-		if location[0] > 0 && isCSSIdentifierByte(decoded[location[0]-1]) {
-			continue
-		}
-		open := location[1] - 1
-		close := matchingCSSParen(decoded, open)
-		if close < 0 {
-			return true
-		}
-		for _, candidate := range splitCSS(decoded[open+1:close], ',') {
-			candidate = trimCSSSpaceAndComments(candidate)
-			if len(candidate) == 0 || candidate[0] != '\'' && candidate[0] != '"' {
-				continue
-			}
-			quote := candidate[0]
-			end := 1
-			for end < len(candidate) && candidate[end] != quote {
-				end++
-			}
-			if end < len(candidate) && isImageDataURL(candidate[1:end]) {
-				return true
-			}
 		}
 	}
 	return false
+}
+
+type cssResourceKind uint8
+
+const (
+	cssURLResource cssResourceKind = iota
+	cssImageSetStringResource
+)
+
+type cssResource struct {
+	start int
+	end   int
+	kind  cssResourceKind
+	value string
+}
+
+func scanCSSResources(value string) []cssResource {
+	return scanCSSResourceRange(value, 0, len(value))
+}
+
+func scanCSSResourceRange(value string, start, end int) []cssResource {
+	var resources []cssResource
+	for pos := start; pos < end; {
+		if value[pos] == '/' && pos+1 < end && value[pos+1] == '*' {
+			pos = skipCSSComment(value, pos, end)
+			continue
+		}
+		if value[pos] == '\'' || value[pos] == '"' {
+			pos = skipCSSString(value, pos, end)
+			continue
+		}
+		if !isCSSIdentifierStart(value[pos]) {
+			pos++
+			continue
+		}
+		identifierStart := pos
+		pos = scanCSSIdentifier(value, pos, end)
+		identifier := strings.ToLower(decodeCSSEscapes(value[identifierStart:pos]))
+		open := skipCSSSpaceAndComments(value, pos, end)
+		if open >= end || value[open] != '(' {
+			continue
+		}
+		close := matchingCSSParen(value, open)
+		if close < 0 || close >= end {
+			if identifier == "url" || identifier == "image-set" || identifier == "-webkit-image-set" {
+				resources = append(resources, cssResource{start: identifierStart, end: end, kind: cssURLResource})
+			}
+			continue
+		}
+		switch identifier {
+		case "url":
+			resources = append(resources, cssResource{
+				start: identifierStart,
+				end:   close + 1,
+				kind:  cssURLResource,
+				value: cssResourceValue(value[open+1 : close]),
+			})
+		case "image-set", "-webkit-image-set":
+			bodyStart := open + 1
+			for _, bounds := range splitCSSBounds(value, bodyStart, close, ',') {
+				candidateStart := skipCSSSpaceAndComments(value, bounds[0], bounds[1])
+				if candidateStart < bounds[1] && (value[candidateStart] == '\'' || value[candidateStart] == '"') {
+					candidateEnd := skipCSSString(value, candidateStart, bounds[1])
+					if candidateEnd <= bounds[1] && candidateEnd > candidateStart+1 {
+						resources = append(resources, cssResource{
+							start: candidateStart,
+							end:   candidateEnd,
+							kind:  cssImageSetStringResource,
+							value: decodeCSSEscapes(value[candidateStart+1 : candidateEnd-1]),
+						})
+					}
+				}
+				resources = append(resources, scanCSSResourceRange(value, bounds[0], bounds[1])...)
+			}
+		default:
+			resources = append(resources, scanCSSResourceRange(value, open+1, close)...)
+		}
+		pos = close + 1
+	}
+	return resources
+}
+
+func isCSSIdentifierStart(value byte) bool {
+	return value == '-' || value == '_' || value == '\\' || value >= 'a' && value <= 'z' || value >= 'A' && value <= 'Z' || value >= 0x80
+}
+
+func scanCSSIdentifier(value string, pos, end int) int {
+	for pos < end {
+		if isCSSIdentifierByte(value[pos]) {
+			pos++
+			continue
+		}
+		if value[pos] != '\\' || pos+1 >= end {
+			break
+		}
+		pos++
+		start := pos
+		for pos < end && pos-start < 6 && isHex(value[pos]) {
+			pos++
+		}
+		if start == pos {
+			pos++
+		} else if pos < end && isASCIISpace(value[pos]) {
+			pos++
+		}
+	}
+	return pos
+}
+
+func skipCSSSpaceAndComments(value string, pos, end int) int {
+	for pos < end {
+		if isASCIISpace(value[pos]) {
+			pos++
+			continue
+		}
+		if value[pos] == '/' && pos+1 < end && value[pos+1] == '*' {
+			pos = skipCSSComment(value, pos, end)
+			continue
+		}
+		break
+	}
+	return pos
+}
+
+func skipCSSComment(value string, pos, end int) int {
+	pos += 2
+	for pos+1 < end {
+		if value[pos] == '*' && value[pos+1] == '/' {
+			return pos + 2
+		}
+		pos++
+	}
+	return end
+}
+
+func skipCSSString(value string, pos, end int) int {
+	quote := value[pos]
+	for pos++; pos < end; pos++ {
+		if value[pos] == quote && !isEscaped(value, pos) {
+			return pos + 1
+		}
+	}
+	return end
+}
+
+func cssResourceValue(value string) string {
+	value = stripCSSComments(value)
+	value = strings.TrimSpace(value)
+	if len(value) >= 2 && (value[0] == '\'' || value[0] == '"') && value[len(value)-1] == value[0] {
+		value = value[1 : len(value)-1]
+	}
+	return decodeCSSEscapes(value)
+}
+
+func stripCSSComments(value string) string {
+	var output strings.Builder
+	for pos := 0; pos < len(value); {
+		if value[pos] == '/' && pos+1 < len(value) && value[pos+1] == '*' {
+			pos = skipCSSComment(value, pos, len(value))
+			continue
+		}
+		output.WriteByte(value[pos])
+		pos++
+	}
+	return output.String()
+}
+
+func splitCSSBounds(value string, start, end int, separator byte) [][2]int {
+	parts := splitCSS(value[start:end], separator)
+	bounds := make([][2]int, 0, len(parts))
+	pos := start
+	for _, part := range parts {
+		bounds = append(bounds, [2]int{pos, pos + len(part)})
+		pos += len(part) + 1
+	}
+	return bounds
 }
 
 func splitCSS(value string, separator byte) []string {

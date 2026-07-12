@@ -754,3 +754,119 @@ func TestPrepareValidatesCIDReferencedBesideSourceData(t *testing.T) {
 		})
 	}
 }
+
+func TestPrepareRejectsImagesWithValidHeadersAndCorruptPixelData(t *testing.T) {
+	for _, mediaType := range []string{"image/png", "image/jpeg", "image/gif"} {
+		t.Run(mediaType, func(t *testing.T) {
+			valid := tinyImage(t, mediaType)
+			var truncated []byte
+			for end := 1; end < len(valid); end++ {
+				candidate := valid[:end]
+				if _, _, configErr := image.DecodeConfig(bytes.NewReader(candidate)); configErr == nil {
+					if _, _, decodeErr := image.Decode(bytes.NewReader(candidate)); decodeErr != nil {
+						truncated = candidate
+						break
+					}
+				}
+			}
+			if truncated == nil {
+				t.Fatal("test image has no header-valid truncation")
+			}
+			_, err := Prepare(message.Document{
+				HTML: []byte(`<img src="cid:asset">`),
+				CID:  map[string]message.Asset{"asset": {MediaType: mediaType, Data: truncated}},
+			})
+			if !errors.Is(err, ErrNonImageCID) {
+				t.Fatalf("error = %v, want ErrNonImageCID", err)
+			}
+		})
+	}
+}
+
+func TestPrepareIgnoresResourceLikeTextOutsideCSSResourceContexts(t *testing.T) {
+	const input = `<html><head><style>
+.ordinary { content:"url(cid:missing) data:image/png;base64,AQID image-set('cid:missing')"; font-family:'url(cid:missing)' }
+.comment { /* url(cid:missing) image-set("data:image/png;base64,AQID") */ color:navy }
+</style></head><body style="content:'cid:missing url(data:image/png;base64,AQID)';/* url(cid:missing) */color:green"></body></html>`
+
+	got, err := Prepare(message.Document{HTML: []byte(input)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(got)
+	for _, want := range []string{"url(cid:missing) data:image/png", "font-family", "color:navy", "cid:missing url(data:image/png", "color:green"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("ordinary CSS text %q was removed: %s", want, got)
+		}
+	}
+}
+
+func TestPrepareRecognizesCommentSeparatedCSSResourceFunctions(t *testing.T) {
+	pngData := tinyImage(t, "image/png")
+	tests := []struct {
+		name       string
+		value      string
+		assets     map[string]message.Asset
+		wantCID    bool
+		wantMarker string
+	}{
+		{name: "source data URL", value: `url/**/(data:image/png;base64,AQID)`, wantMarker: "data:image"},
+		{name: "remote URL", value: `url/**/(https://private.example/image.png)`, wantMarker: "private.example"},
+		{name: "local URL", value: `u\72l/**/(../private/image.png)`, wantMarker: "private/image.png"},
+		{name: "CID URL", value: `u\72l/**/(cid:trusted)`, assets: map[string]message.Asset{"trusted": {MediaType: "image/png", Data: pngData}}, wantCID: true},
+		{name: "source data image set", value: `image-set/**/("data:image/png;base64,AQID" 1x)`, wantMarker: "data:image"},
+		{name: "remote image set", value: `-webkit-image-set/**/("https://private.example/image.png" 1x)`, wantMarker: "private.example"},
+		{name: "CID image set", value: `image-s\65t/**/(url/**/(cid:trusted) 1x)`, assets: map[string]message.Asset{"trusted": {MediaType: "image/png", Data: pngData}}, wantCID: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := Prepare(message.Document{
+				HTML: []byte(`<div style='background-image:` + tt.value + `;color:teal'></div>`),
+				CID:  tt.assets,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			text := string(got)
+			if tt.wantMarker != "" && strings.Contains(text, tt.wantMarker) {
+				t.Errorf("prepared HTML retained resource marker %q: %s", tt.wantMarker, got)
+			}
+			if tt.wantCID && !strings.Contains(text, imageDataURL("image/png", pngData)) {
+				t.Errorf("prepared HTML did not embed comment-separated CID: %s", got)
+			}
+			if !strings.Contains(text, "color:teal") {
+				t.Errorf("prepared HTML removed safe sibling declaration: %s", got)
+			}
+		})
+	}
+}
+
+func TestPrepareValidatesCommentSeparatedCSSCID(t *testing.T) {
+	for _, value := range []string{
+		`url/**/(cid:missing)`,
+		`image-set/**/("cid:missing" 1x)`,
+		`-webkit-image-set/**/(url/**/(cid:missing) 1x)`,
+	} {
+		t.Run(value, func(t *testing.T) {
+			_, err := Prepare(message.Document{HTML: []byte(`<div style='background:` + value + `'></div>`)})
+			if !errors.Is(err, ErrMissingCID) {
+				t.Fatalf("error = %v, want ErrMissingCID", err)
+			}
+		})
+	}
+}
+
+func TestPrepareScansResourcesNestedInOtherCSSFunctions(t *testing.T) {
+	const input = `<style>.nested { background:cross-fade(url/**/(https://private.example/image.png), red); color:navy }</style>`
+	got, err := Prepare(message.Document{HTML: []byte(input)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(got)
+	if strings.Contains(text, "private.example") || strings.Contains(text, "background:") {
+		t.Fatalf("prepared HTML retained nested remote resource: %s", got)
+	}
+	if !strings.Contains(text, "color:navy") {
+		t.Fatalf("prepared HTML removed safe sibling declaration: %s", got)
+	}
+}
