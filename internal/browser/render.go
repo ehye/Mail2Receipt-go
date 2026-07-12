@@ -76,6 +76,7 @@ func renderWithInspection(ctx context.Context, executable, htmlPath string, insp
 		page.Enable(),
 		emulation.SetScriptExecutionDisabled(true),
 		chromedp.Navigate(pageURL),
+		emulation.SetEmulatedMedia().WithMedia("print"),
 	); err != nil {
 		return Result{}, errors.New("browser could not load receipt")
 	}
@@ -88,9 +89,67 @@ func renderWithInspection(ctx context.Context, executable, htmlPath string, insp
 	var dimensions struct {
 		Width  float64 `json:"width"`
 		Height float64 `json:"height"`
+		Valid  bool    `json:"valid"`
 	}
 	if err := chromedp.Run(browserCtx,
-		chromedp.Evaluate(`({width: document.documentElement.scrollWidth, height: document.documentElement.scrollHeight})`, &dimensions),
+		chromedp.Evaluate(`(() => {
+  const root = document.documentElement;
+  const body = document.body;
+  const scrollX = window.scrollX;
+  const scrollY = window.scrollY;
+  let minLeft = 0;
+  let minTop = 0;
+  let maxRight = Math.max(root.scrollWidth, body ? body.scrollWidth : 0);
+  let maxBottom = Math.max(root.scrollHeight, body ? body.scrollHeight : 0);
+  let valid = [scrollX, scrollY, maxRight, maxBottom].every(Number.isFinite);
+
+  const include = (left, top, right, bottom) => {
+    if (![left, top, right, bottom].every(Number.isFinite)) {
+      valid = false;
+      return;
+    }
+    minLeft = Math.min(minLeft, left);
+    minTop = Math.min(minTop, top);
+    maxRight = Math.max(maxRight, right);
+    maxBottom = Math.max(maxBottom, bottom);
+  };
+  const visible = style => style.display !== 'none' &&
+    style.visibility !== 'hidden' && style.visibility !== 'collapse' &&
+    Number.parseFloat(style.opacity || '1') !== 0;
+
+  for (const element of document.querySelectorAll('*')) {
+    const style = getComputedStyle(element);
+    if (visible(style)) {
+      for (const rect of element.getClientRects()) {
+        if (rect.width > 0 || rect.height > 0) {
+          include(rect.left + scrollX, rect.top + scrollY, rect.right + scrollX, rect.bottom + scrollY);
+        }
+      }
+    }
+
+    for (const pseudo of ['::before', '::after']) {
+      const pseudoStyle = getComputedStyle(element, pseudo);
+      if (!visible(pseudoStyle) || pseudoStyle.content === 'none' || pseudoStyle.content === 'normal') continue;
+
+      // CSSOM exposes pseudo-element styles but not their client rects. Normal-flow
+      // pseudo overflow is reflected by scroll dimensions; fixed boxes are not.
+      if (pseudoStyle.position === 'fixed') {
+        const width = Number.parseFloat(pseudoStyle.width);
+        const height = Number.parseFloat(pseudoStyle.height);
+        const leftValue = Number.parseFloat(pseudoStyle.left);
+        const rightValue = Number.parseFloat(pseudoStyle.right);
+        const topValue = Number.parseFloat(pseudoStyle.top);
+        const bottomValue = Number.parseFloat(pseudoStyle.bottom);
+        const left = Number.isFinite(leftValue) ? leftValue : innerWidth - rightValue - width;
+        const top = Number.isFinite(topValue) ? topValue : innerHeight - bottomValue - height;
+        if (Number.isFinite(width) && Number.isFinite(height) && Number.isFinite(left) && Number.isFinite(top)) {
+          include(left + scrollX, top + scrollY, left + width + scrollX, top + height + scrollY);
+        }
+      }
+    }
+  }
+  return {width: maxRight, height: maxBottom, valid: valid && minLeft >= 0 && minTop >= 0};
+})()`, &dimensions),
 		chromedp.ActionFunc(func(ctx context.Context) error {
 			_, _, content, _, _, _, err := page.GetLayoutMetrics().Do(ctx)
 			if err == nil && content != nil {
@@ -101,6 +160,9 @@ func renderWithInspection(ctx context.Context, executable, htmlPath string, insp
 		}),
 	); err != nil {
 		return Result{}, errors.New("browser could not inspect receipt")
+	}
+	if !dimensions.Valid {
+		return Result{}, errors.New("content cannot fit one A5 page")
 	}
 
 	scale, err := scaleToFit(dimensions.Width, dimensions.Height)

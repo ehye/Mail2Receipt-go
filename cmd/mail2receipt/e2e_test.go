@@ -61,5 +61,8 @@ func TestReceiptEndToEnd(t *testing.T) {
 	if err != nil {
 		t.Fatal("renderer did not report a numeric scale")
 	}
+	if scale < 0.50 || scale > 0.79 {
+		t.Fatalf("renderer scale = %v, want 0.50 <= scale <= 0.79", scale)
+	}
 	t.Logf("scale: %.2f", scale)
 }

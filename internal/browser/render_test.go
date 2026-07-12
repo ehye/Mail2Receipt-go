@@ -74,6 +74,65 @@ func TestRenderLongDocumentUsesIntermediateScale(t *testing.T) {
 	}
 }
 
+func TestRenderOrdinaryContentUsesMaximumScale(t *testing.T) {
+	executable := testBrowser(t)
+	result, err := Render(context.Background(), executable, writeHTML(t, `<div style="width:400px;height:400px">receipt</div>`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Scale != maxScale {
+		t.Fatalf("Render() scale = %v, want %v", result.Scale, maxScale)
+	}
+}
+
+func TestRenderFitsFixedOverflow(t *testing.T) {
+	executable := testBrowser(t)
+	result, err := Render(context.Background(), executable, writeHTML(t, `<div style="position:fixed;left:600px;top:0;width:100px;height:20px">fixed</div>`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := printableWidth / 700
+	if math.Abs(result.Scale-want) > 0.001 {
+		t.Fatalf("Render() scale = %v, want approximately %v", result.Scale, want)
+	}
+}
+
+func TestRenderFitsTransformedOverflow(t *testing.T) {
+	executable := testBrowser(t)
+	result, err := Render(context.Background(), executable, writeHTML(t, `<div style="width:100px;height:20px;transform:translateX(600px)">transformed</div>`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := printableWidth / 700
+	if math.Abs(result.Scale-want) > 0.001 {
+		t.Fatalf("Render() scale = %v, want approximately %v", result.Scale, want)
+	}
+}
+
+func TestRenderFitsPrintOnlyPseudoElementOverflow(t *testing.T) {
+	executable := testBrowser(t)
+	body := `<style>
+#print-overflow::after{content:none}
+@media print{#print-overflow::after{content:"print";position:fixed;left:600px;top:0;width:100px;height:20px}}
+</style><div id="print-overflow"></div>`
+	result, err := Render(context.Background(), executable, writeHTML(t, body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := printableWidth / 700
+	if math.Abs(result.Scale-want) > 0.001 {
+		t.Fatalf("Render() scale = %v, want approximately %v", result.Scale, want)
+	}
+}
+
+func TestRenderRejectsNegativeVisualOverflow(t *testing.T) {
+	executable := testBrowser(t)
+	_, err := Render(context.Background(), executable, writeHTML(t, `<div style="width:100px;height:20px;transform:translateX(-1px)">negative</div>`))
+	if err == nil || err.Error() != "content cannot fit one A5 page" {
+		t.Fatalf("Render() error = %v, want content cannot fit one A5 page", err)
+	}
+}
+
 func TestRenderPreparedEmbeddedLogosOffline(t *testing.T) {
 	executable := testBrowser(t)
 	var requests atomic.Int32
