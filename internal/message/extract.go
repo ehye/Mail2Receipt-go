@@ -37,6 +37,13 @@ type Document struct {
 	CID  map[string]Asset
 }
 
+type mimePart struct {
+	mediaType  string
+	attachment bool
+	html       []byte
+	children   []*mimePart
+}
+
 func Extract(r io.Reader, maxBytes int64) (Document, error) {
 	var doc Document
 	if maxBytes < 0 || maxBytes == math.MaxInt64 {
@@ -58,7 +65,9 @@ func Extract(r io.Reader, maxBytes int64) (Document, error) {
 
 	doc.CID = make(map[string]Asset)
 	var cidBytes int64
-	err = entity.Walk(func(_ []int, part *gomessage.Entity, walkErr error) error {
+	parts := make(map[string]*mimePart)
+	var root *mimePart
+	err = entity.Walk(func(path []int, part *gomessage.Entity, walkErr error) error {
 		if walkErr != nil {
 			return fmt.Errorf("%w: walk entity", ErrMalformedMIME)
 		}
@@ -68,12 +77,32 @@ func Extract(r io.Reader, maxBytes int64) (Document, error) {
 			return fmt.Errorf("%w: content type", ErrMalformedMIME)
 		}
 		mediaType = strings.ToLower(mediaType)
+		var disposition string
+		if part.Header.Get("Content-Disposition") != "" {
+			disposition, _, err = part.Header.ContentDisposition()
+			if err != nil {
+				return fmt.Errorf("%w: content disposition", ErrMalformedMIME)
+			}
+		}
+		node := &mimePart{
+			mediaType:  mediaType,
+			attachment: strings.EqualFold(disposition, "attachment"),
+		}
+		key := fmt.Sprint(path)
+		parts[key] = node
+		if len(path) == 0 {
+			root = node
+		} else {
+			parent := parts[fmt.Sprint(path[:len(path)-1])]
+			parent.children = append(parent.children, node)
+		}
+
 		if mediaType == "text/html" {
 			body, err := io.ReadAll(part.Body)
 			if err != nil {
 				return fmt.Errorf("%w: read HTML part", ErrMalformedMIME)
 			}
-			doc.HTML = body
+			node.html = body
 			return nil
 		}
 
@@ -98,10 +127,35 @@ func Extract(r io.Reader, maxBytes int64) (Document, error) {
 	if err != nil {
 		return Document{}, err
 	}
+	doc.HTML = selectHTML(root)
 	if doc.HTML == nil {
 		return Document{}, ErrMissingHTML
 	}
 	return doc, nil
+}
+
+func selectHTML(part *mimePart) []byte {
+	if part == nil || part.attachment {
+		return nil
+	}
+	if part.mediaType == "text/html" {
+		return part.html
+	}
+	if part.mediaType == "multipart/alternative" {
+		var selected []byte
+		for _, child := range part.children {
+			if html := selectHTML(child); html != nil {
+				selected = html
+			}
+		}
+		return selected
+	}
+	for _, child := range part.children {
+		if html := selectHTML(child); html != nil {
+			return html
+		}
+	}
+	return nil
 }
 
 func normalizeCID(v string) string {

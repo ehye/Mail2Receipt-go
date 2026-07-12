@@ -79,7 +79,7 @@ func TestExtractIndexesImagesByNormalizedContentID(t *testing.T) {
 	}
 }
 
-func TestExtractKeepsFinalHTMLPart(t *testing.T) {
+func TestExtractMixedSelectsFirstHTMLChild(t *testing.T) {
 	raw := "MIME-Version: 1.0\r\nContent-Type: multipart/mixed; boundary=x\r\n\r\n" +
 		"--x\r\nContent-Type: text/html\r\n\r\nfirst\r\n" +
 		"--x\r\nContent-Type: text/html\r\n\r\nfinal\r\n--x--\r\n"
@@ -88,7 +88,68 @@ func TestExtractKeepsFinalHTMLPart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(got.HTML) != "final" {
+	if string(got.HTML) != "first" {
+		t.Fatalf("HTML = %q", got.HTML)
+	}
+}
+
+func TestExtractIgnoresHTMLAttachmentAfterBody(t *testing.T) {
+	raw := "MIME-Version: 1.0\r\nContent-Type: multipart/mixed; boundary=x\r\n\r\n" +
+		"--x\r\nContent-Type: text/html\r\n\r\nbody\r\n" +
+		"--x\r\nContent-Type: text/html\r\nContent-Disposition: attachment; filename=receipt.html\r\n\r\nattachment\r\n--x--\r\n"
+
+	got, err := Extract(strings.NewReader(raw), 1<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got.HTML) != "body" {
+		t.Fatalf("HTML = %q", got.HTML)
+	}
+}
+
+func TestExtractIgnoresHTMLInUnrelatedLaterBranch(t *testing.T) {
+	raw := "MIME-Version: 1.0\r\nContent-Type: multipart/mixed; boundary=outer\r\n\r\n" +
+		"--outer\r\nContent-Type: multipart/related; boundary=body\r\n\r\n" +
+		"--body\r\nContent-Type: text/html\r\n\r\nselected\r\n--body--\r\n" +
+		"--outer\r\nContent-Type: multipart/related; boundary=other\r\n\r\n" +
+		"--other\r\nContent-Type: text/html\r\n\r\nunrelated\r\n--other--\r\n--outer--\r\n"
+
+	got, err := Extract(strings.NewReader(raw), 1<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got.HTML) != "selected" {
+		t.Fatalf("HTML = %q", got.HTML)
+	}
+}
+
+func TestExtractNestedAlternativeSelectsItsHTMLRepresentation(t *testing.T) {
+	raw := "MIME-Version: 1.0\r\nContent-Type: multipart/alternative; boundary=outer\r\n\r\n" +
+		"--outer\r\nContent-Type: text/html\r\n\r\nouter-html\r\n" +
+		"--outer\r\nContent-Type: multipart/alternative; boundary=inner\r\n\r\n" +
+		"--inner\r\nContent-Type: text/plain\r\n\r\nplain\r\n" +
+		"--inner\r\nContent-Type: text/html\r\n\r\ninner-html\r\n--inner--\r\n--outer--\r\n"
+
+	got, err := Extract(strings.NewReader(raw), 1<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got.HTML) != "inner-html" {
+		t.Fatalf("HTML = %q", got.HTML)
+	}
+}
+
+func TestExtractMixedSkipsChildrenWithoutHTML(t *testing.T) {
+	raw := "MIME-Version: 1.0\r\nContent-Type: multipart/mixed; boundary=x\r\n\r\n" +
+		"--x\r\nContent-Type: text/plain\r\n\r\nplain\r\n" +
+		"--x\r\nContent-Type: text/html\r\n\r\nbody\r\n" +
+		"--x\r\nContent-Type: text/html\r\n\r\nlater\r\n--x--\r\n"
+
+	got, err := Extract(strings.NewReader(raw), 1<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got.HTML) != "body" {
 		t.Fatalf("HTML = %q", got.HTML)
 	}
 }
