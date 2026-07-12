@@ -208,3 +208,52 @@ PASS; only line-ending conversion warnings were emitted
 - Network blocking, no-proxy startup, disabled JavaScript, geometry union, conservative paint exclusions, A5 output, inclusive scale limits, and exact one-page validation are unchanged.
 - The approved receipt remains accepted without exposing fixture content.
 - The policy deliberately rejects harmless named animations and delayed zero-duration transitions because their stability cannot be guaranteed between measurement and printing.
+
+## Direct Text Geometry Follow-up
+
+Code/test commit: `d0cbbb5` (`Measure direct text print geometry`).
+
+### TDD Evidence
+
+RED command:
+
+```text
+go test ./internal/browser -count=1 -run "TestRender(RejectsNegativeDirectTextFromZeroAreaContainer|RejectsFarPositiveDirectTextFromZeroAreaContainer|FitsTransformedDirectTextFromZeroAreaContainer|RejectsNestedTextWithoutElementRects|AcceptsEmptyZeroAreaElement)$" -v
+```
+
+Before implementation, negative and far-positive direct text in fixed zero-area containers rendered without error, transformed direct text remained at scale 0.79, and nested text under `display:contents` rendered without error. The empty zero-area control passed.
+
+GREEN evidence:
+
+```text
+go test ./internal/browser -count=1 -v
+PASS (31.864s package result)
+
+go test ./cmd/mail2receipt -count=1 -run TestReceiptEndToEnd -v -timeout 90s
+PASS; reported scale 0.77
+
+go test ./... -count=1 -timeout 120s
+PASS for all packages
+
+go vet ./...
+PASS (no output)
+
+git diff --check
+PASS; only line-ending conversion warnings were emitted
+```
+
+### Exact Text Geometry Policy
+
+- Retain every visible element client rectangle, including zero-width and zero-height rectangles, in the document-coordinate union. Their anchor coordinates therefore participate in non-finite, negative, and positive-extent checks.
+- Build an accepted-element chain in document order. An element is accepted for text traversal only when its parent is accepted, it is visible, it has no rejected opaque/custom rendering surface or known ink-overflow effect, and it has no rejected animation/transition timing.
+- For each accepted element, inspect each direct non-whitespace text child with a DOM Range and union every Range client rectangle after adding the current document scroll offsets.
+- Nested accepted text is covered when its own parent element is visited. Text below hidden, opaque, custom-rendered, paint-rejected, or timing-rejected ancestors is not traversed; those surfaces already fail closed or do not paint.
+- Chromium Range rectangles provide the actual laid-out text geometry, including fixed and transformed ancestor effects. No font-width approximation is used.
+- Empty zero-area elements remain accepted when their retained anchor geometry is finite and nonnegative and no other conservative rejection applies.
+
+### Self-review And Residual Concern
+
+- Negative text or anchor geometry fails with the generic cannot-fit error; positive text extents participate in scale fitting and fail when scale would fall below 0.50.
+- Existing print-media timing, pseudo, list, opaque-surface, and visual-ink controls remain in force. Network blocking, no-proxy startup, disabled JavaScript, A5 output, inclusive scale limits, and exact one-page validation are unchanged.
+- The approved receipt remains accepted at the established scale without fixture disclosure.
+- Range geometry measures layout rectangles, while the separately enumerated ink-overflow policy continues to reject known paint that can extend beyond those rectangles.
