@@ -9,23 +9,27 @@ import (
 	_ "image/gif"
 	_ "image/jpeg"
 	_ "image/png"
+	"regexp"
 	"strconv"
 	"strings"
 	"unicode"
+	"unicode/utf8"
 
 	"golang.org/x/net/html"
 
 	"mail2receipt/internal/message"
 )
 
-const printCSS = `@page { size: A5 portrait; margin: 8mm; }
-html, body { margin: 0; padding: 0; }`
+const printCSS = `@page { size: A5 portrait; margin: 2mm; }
+html, body { margin: 0; padding: 0; }
+[data-mail2receipt-emphasis], [data-mail2receipt-emphasis] * { font-size: 12px !important; line-height: 18px !important; }`
 
 const maxSrcdocDepth = 4
 
 var (
 	ErrMissingCID  = errors.New("referenced CID is missing")
 	ErrNonImageCID = errors.New("referenced CID is not an image")
+	simpleFontSize = regexp.MustCompile(`(?i)^(\s*)([+]?(?:\d+(?:\.\d*)?|\.\d+))(px|pt|pc|in|cm|mm|q|em|rem|ex|ch|cap|ic|lh|rlh|vw|vh|vi|vb|vmin|vmax|svw|svh|svi|svb|svmin|svmax|lvw|lvh|lvi|lvb|lvmin|lvmax|dvw|dvh|dvi|dvb|dvmin|dvmax|%)(\s*(?:!\s*important\s*)?)$`)
 )
 
 func Prepare(doc message.Document) ([]byte, error) {
@@ -56,6 +60,9 @@ func prepareHTML(source []byte, assets map[string]message.Asset, srcdocDepth int
 				if strings.HasPrefix(name, "shadowroot") {
 					continue
 				}
+				if name == "data-mail2receipt-emphasis" {
+					continue
+				}
 				keep := true
 				switch name {
 				case "data":
@@ -84,7 +91,7 @@ func prepareHTML(source []byte, assets map[string]message.Asset, srcdocDepth int
 					attr.Val, err = normalizeSrcset(attr.Val, assets)
 					keep = strings.TrimSpace(attr.Val) != ""
 				case "style":
-					attr.Val, err = normalizeDeclarations(attr.Val, assets)
+					attr.Val, err = normalizeDeclarations(attr.Val, assets, addPrintCSS)
 					keep = strings.TrimSpace(attr.Val) != ""
 				case "content":
 					if refreshTarget {
@@ -102,7 +109,7 @@ func prepareHTML(source []byte, assets map[string]message.Asset, srcdocDepth int
 			if node.Data == "style" {
 				for child := node.FirstChild; child != nil; child = child.NextSibling {
 					if child.Type == html.TextNode {
-						child.Data, err = normalizeStylesheet(child.Data, assets)
+						child.Data, err = normalizeStylesheet(child.Data, assets, addPrintCSS)
 						if err != nil {
 							return err
 						}
@@ -116,6 +123,10 @@ func prepareHTML(source []byte, assets map[string]message.Asset, srcdocDepth int
 				return err
 			}
 			child = next
+		}
+		if addPrintCSS && node.Type == html.ElementNode && emphasisPrefix(descendantText(node)) && !hasMarkedDescendant(node) {
+			node.Attr = append(node.Attr, html.Attribute{Key: "data-mail2receipt-emphasis"})
+			forceEmphasisTypography(node)
 		}
 		return nil
 	}
@@ -357,7 +368,7 @@ func keepDeclaration(property, value string) bool {
 	return !containsNonEmbeddedCSSURL(value)
 }
 
-func normalizeDeclarations(value string, assets map[string]message.Asset) (string, error) {
+func normalizeDeclarations(value string, assets map[string]message.Asset, scaleFonts bool) (string, error) {
 	parts := splitCSS(value, ';')
 	kept := parts[:0]
 	for _, declaration := range parts {
@@ -380,10 +391,105 @@ func normalizeDeclarations(value string, assets map[string]message.Asset) (strin
 			continue
 		}
 		if keepDeclaration(declaration[:colon], declaration[colon+1:]) {
+			if scaleFonts && strings.EqualFold(strings.TrimSpace(declaration[:colon]), "font-size") {
+				declaration = declaration[:colon+1] + increaseFontSize(declaration[colon+1:])
+			}
 			kept = append(kept, declaration)
 		}
 	}
 	return strings.Join(kept, ";"), nil
+}
+
+func increaseFontSize(value string) string {
+	parts := simpleFontSize.FindStringSubmatch(value)
+	if parts == nil {
+		return value
+	}
+	number, err := strconv.ParseFloat(parts[2], 64)
+	if err != nil || number == 0 {
+		return value
+	}
+	return parts[1] + strconv.FormatFloat(number*1.05, 'f', -1, 64) + parts[3] + parts[4]
+}
+
+func descendantText(node *html.Node) string {
+	var text strings.Builder
+	var walk func(*html.Node)
+	walk = func(current *html.Node) {
+		if current.Type == html.TextNode {
+			text.WriteString(current.Data)
+		}
+		for child := current.FirstChild; child != nil; child = child.NextSibling {
+			walk(child)
+		}
+	}
+	walk(node)
+	return strings.Join(strings.Fields(text.String()), " ")
+}
+
+func emphasisPrefix(text string) bool {
+	lower := strings.ToLower(text)
+	return hasTextPrefix(lower, "by subscribing, you authorize us to") || hasTextPrefix(lower, "see your")
+}
+
+func hasTextPrefix(text, prefix string) bool {
+	if !strings.HasPrefix(text, prefix) {
+		return false
+	}
+	if len(text) == len(prefix) {
+		return true
+	}
+	next, _ := utf8.DecodeRuneInString(text[len(prefix):])
+	return !unicode.IsLetter(next) && !unicode.IsNumber(next)
+}
+
+func forceEmphasisTypography(node *html.Node) {
+	if node.Type == html.ElementNode {
+		styleIndex := -1
+		for i := range node.Attr {
+			if strings.EqualFold(node.Attr[i].Key, "style") {
+				styleIndex = i
+				break
+			}
+		}
+		var kept []string
+		if styleIndex >= 0 {
+			for _, declaration := range splitCSS(node.Attr[styleIndex].Val, ';') {
+				colon := indexCSS(declaration, ':')
+				if colon >= 0 {
+					property := strings.TrimSpace(declaration[:colon])
+					if strings.EqualFold(property, "font-size") || strings.EqualFold(property, "line-height") {
+						continue
+					}
+				}
+				if strings.TrimSpace(declaration) != "" {
+					kept = append(kept, declaration)
+				}
+			}
+			node.Attr[styleIndex].Val = strings.Join(append(kept, "font-size:12px !important", "line-height:18px !important"), ";")
+		} else {
+			node.Attr = append(node.Attr, html.Attribute{Key: "style", Val: "font-size:12px !important;line-height:18px !important"})
+		}
+	}
+	for child := node.FirstChild; child != nil; child = child.NextSibling {
+		forceEmphasisTypography(child)
+	}
+}
+
+func hasMarkedDescendant(node *html.Node) bool {
+	for child := node.FirstChild; child != nil; child = child.NextSibling {
+		if child.Type == html.ElementNode {
+			for _, attr := range child.Attr {
+				if attr.Key == "data-mail2receipt-emphasis" {
+					return true
+				}
+			}
+		}
+		if hasMarkedDescendant(child) {
+			return true
+		}
+	}
+	return false
 }
 
 func validateCSSCIDReferences(value string, assets map[string]message.Asset) error {
@@ -641,15 +747,40 @@ func indexCSS(value string, separator byte) int {
 	return len(parts[0])
 }
 
-func normalizeStylesheet(value string, assets map[string]message.Asset) (string, error) {
+func normalizeStylesheet(value string, assets map[string]message.Asset, scaleFonts bool) (string, error) {
+	return normalizeStylesheetLevel(value, assets, scaleFonts, false)
+}
+
+func normalizeStylesheetLevel(value string, assets map[string]message.Asset, scaleFonts, declarationsAroundRules bool) (string, error) {
 	var output strings.Builder
 	for pos := 0; pos < len(value); {
 		open := findCSSBrace(value, pos)
 		if open < 0 {
-			output.WriteString(removeRemoteImports(value[pos:]))
+			tail := removeRemoteImports(value[pos:])
+			if declarationsAroundRules {
+				var err error
+				tail, err = normalizeDeclarations(tail, assets, scaleFonts)
+				if err != nil {
+					return "", err
+				}
+			}
+			output.WriteString(tail)
 			break
 		}
-		output.WriteString(removeRemoteImports(value[pos:open]))
+		prelude := removeRemoteImports(value[pos:open])
+		if declarationsAroundRules {
+			parts := splitCSS(prelude, ';')
+			if len(parts) > 1 {
+				declarations, err := normalizeDeclarations(strings.Join(parts[:len(parts)-1], ";"), assets, scaleFonts)
+				if err != nil {
+					return "", err
+				}
+				output.WriteString(declarations)
+				output.WriteByte(';')
+				prelude = parts[len(parts)-1]
+			}
+		}
+		output.WriteString(prelude)
 		output.WriteByte('{')
 		depth := 1
 		quote := byte(0)
@@ -689,9 +820,9 @@ func normalizeStylesheet(value string, assets map[string]message.Asset) (string,
 			var normalized string
 			var err error
 			if findCSSBrace(body, 0) >= 0 {
-				normalized, err = normalizeStylesheet(body, assets)
+				normalized, err = normalizeStylesheetLevel(body, assets, scaleFonts, true)
 			} else {
-				normalized, err = normalizeDeclarations(body, assets)
+				normalized, err = normalizeDeclarations(body, assets, scaleFonts)
 			}
 			if err != nil {
 				return "", err
@@ -703,9 +834,9 @@ func normalizeStylesheet(value string, assets map[string]message.Asset) (string,
 		var normalized string
 		var err error
 		if findCSSBrace(body, 0) >= 0 {
-			normalized, err = normalizeStylesheet(body, assets)
+			normalized, err = normalizeStylesheetLevel(body, assets, scaleFonts, true)
 		} else {
-			normalized, err = normalizeDeclarations(body, assets)
+			normalized, err = normalizeDeclarations(body, assets, scaleFonts)
 		}
 		if err != nil {
 			return "", err

@@ -89,7 +89,8 @@ func TestRenderPreparedDeclarativeShadowTemplatesRemainInert(t *testing.T) {
 
 func TestRenderRejectsScaleBelowMinimum(t *testing.T) {
 	executable := testBrowser(t)
-	_, err := Render(context.Background(), executable, writeHTML(t, `<div style="height:1500px;width:400px">too long</div>`))
+	height := math.Ceil(printableHeight/minScale) + 1
+	_, err := Render(context.Background(), executable, writeHTML(t, fmt.Sprintf(`<div style="height:%vpx;width:400px">too long</div>`, height)))
 	if err == nil || err.Error() != "content cannot fit one A5 page" {
 		t.Fatalf("Render() error = %v, want content cannot fit one A5 page", err)
 	}
@@ -108,9 +109,21 @@ func TestRenderLongDocumentUsesIntermediateScale(t *testing.T) {
 
 func TestRenderOrdinaryContentUsesMaximumScale(t *testing.T) {
 	executable := testBrowser(t)
-	result, err := Render(context.Background(), executable, writeHTML(t, `<div style="width:400px;height:400px">receipt</div>`))
+	var viewport struct {
+		Width       float64 `json:"width"`
+		Height      float64 `json:"height"`
+		OuterWidth  float64 `json:"outerWidth"`
+		OuterHeight float64 `json:"outerHeight"`
+	}
+	result, err := renderWithInspection(context.Background(), executable, writeHTML(t, `<div style="width:400px;height:400px">receipt</div>`), chromedp.Evaluate(`({width: innerWidth, height: innerHeight, outerWidth, outerHeight})`, &viewport))
 	if err != nil {
 		t.Fatal(err)
+	}
+	if viewport.Width > printableWidth || viewport.Height > printableHeight {
+		t.Fatalf("browser viewport = %vx%v, exceeds printable area %vx%v", viewport.Width, viewport.Height, printableWidth, printableHeight)
+	}
+	if viewport.OuterWidth > printableWidth || viewport.OuterHeight > printableHeight {
+		t.Fatalf("browser outer viewport = %vx%v, exceeds printable area %vx%v", viewport.OuterWidth, viewport.OuterHeight, printableWidth, printableHeight)
 	}
 	if result.Scale != maxScale {
 		t.Fatalf("Render() scale = %v, want %v", result.Scale, maxScale)
@@ -436,6 +449,26 @@ func TestScaleToFitAcceptsExactMinimumBoundary(t *testing.T) {
 	_, err = scaleToFit(printableWidth/minScale, math.Nextafter(printableHeight/minScale, math.Inf(1)))
 	if err == nil || err.Error() != "content cannot fit one A5 page" {
 		t.Fatalf("scaleToFit() above boundary error = %v, want content cannot fit one A5 page", err)
+	}
+}
+
+func TestPrintableAreaAccountsForTwoMillimeterPageMargins(t *testing.T) {
+	const pixelsPerMillimeter = 96.0 / 25.4
+	if want := 144 * pixelsPerMillimeter; printableWidth != want {
+		t.Fatalf("printableWidth = %v, want %v", printableWidth, want)
+	}
+	if want := 206 * pixelsPerMillimeter; printableHeight != want {
+		t.Fatalf("printableHeight = %v, want %v", printableHeight, want)
+	}
+}
+
+func TestScaleToFitCapsAtOne(t *testing.T) {
+	scale, err := scaleToFit(printableWidth/2, printableHeight/2)
+	if err != nil {
+		t.Fatalf("scaleToFit() error = %v", err)
+	}
+	if scale != 1.0 {
+		t.Fatalf("scaleToFit() = %v, want 1", scale)
 	}
 }
 

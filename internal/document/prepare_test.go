@@ -658,7 +658,7 @@ func TestPrepareInjectsOnePrintStyleAsFinalHeadChild(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	const css = `@page { size: A5 portrait; margin: 8mm; }
+	const css = `@page { size: A5 portrait; margin: 2mm; }
 html, body { margin: 0; padding: 0; }`
 	if count := bytes.Count(got, []byte(css)); count != 1 {
 		t.Fatalf("print style count = %d", count)
@@ -667,6 +667,177 @@ html, body { margin: 0; padding: 0; }`
 	styleEnd := strings.Index(string(got), "</style>")
 	if headEnd < 0 || styleEnd < 0 || strings.TrimSpace(string(got[styleEnd+len("</style>"):headEnd])) != "" {
 		t.Fatalf("print style is not the final head child: %s", got)
+	}
+}
+
+func TestPrepareIncreasesSimpleTopLevelFontSizes(t *testing.T) {
+	const input = `<html><head><style>.a{font-size:10px}.b{font-size:2.5em !important}.c{font-size:0}.cz{font-size:0PX}.u{font-size:10PX !IMPORTANT}.d{font-size:large}.e{font-size:calc(10px + 1vw)}.f{font-size:var(--size)}.g{font-size:12wat}</style></head><body><p style="font-size: 8pt !important">Text</p></body></html>`
+	got, err := Prepare(message.Document{HTML: []byte(input)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(got)
+	for _, want := range []string{"font-size:10.5px", "font-size:2.625em !important", "font-size:0", "font-size:0PX", "font-size:10.5PX !IMPORTANT", "font-size: 8.4pt !important", "font-size:large", "font-size:calc(10px + 1vw)", "font-size:var(--size)", "font-size:12wat"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("prepared HTML missing expected CSS %q", want)
+		}
+	}
+}
+
+func TestPrepareStripsSourceAuthoredEmphasisMarkers(t *testing.T) {
+	const input = `<html><head></head><body><div id="forged" data-mail2receipt-emphasis="forged">Ordinary text</div><div id="legitimate">See your details<span id="child" data-mail2receipt-emphasis>continued</span></div></body></html>`
+	got, err := Prepare(message.Document{HTML: []byte(input)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	root, err := nethtml.Parse(bytes.NewReader(got))
+	if err != nil {
+		t.Fatal(err)
+	}
+	marked := map[string]bool{}
+	var walk func(*nethtml.Node)
+	walk = func(node *nethtml.Node) {
+		id, marker := "", false
+		for _, attr := range node.Attr {
+			if attr.Key == "id" {
+				id = attr.Val
+			}
+			if attr.Key == "data-mail2receipt-emphasis" {
+				marker = true
+			}
+		}
+		if marker {
+			marked[id] = true
+		}
+		for child := node.FirstChild; child != nil; child = child.NextSibling {
+			walk(child)
+		}
+	}
+	walk(root)
+	if marked["forged"] || marked["child"] {
+		t.Error("source-authored emphasis marker was retained")
+	}
+	if !marked["legitimate"] {
+		t.Error("forged descendant marker suppressed legitimate ancestor marking")
+	}
+}
+
+func TestPrepareScalesDeclarationsAroundNestedCSSRules(t *testing.T) {
+	const input = `<html><head><style>@media print { font-size:10px; .child { font-size:20px } font-size:30px; }</style></head><body></body></html>`
+	got, err := Prepare(message.Document{HTML: []byte(input)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(got)
+	for _, want := range []string{"font-size:10.5px", ".child { font-size:21px }", "font-size:31.5px"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("nested stylesheet missing %q", want)
+		}
+	}
+}
+
+func TestPrepareMarksApprovedEmphasisPrefixes(t *testing.T) {
+	const input = `<html><head></head><body><div id="first">  BY subscribing, <a>you authorize us to continue</a><p>Questions about this?</p></div><section id="second"><span>See</span>   your details</section><div id="punctuation">See your: details</div><div id="substring">Intro: See your details</div><div id="yourself">See yourself</div><div id="authorize-today">By subscribing, you authorize us today</div><div id="other">Unrelated</div></body></html>`
+	got, err := Prepare(message.Document{HTML: []byte(input)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	root, err := nethtml.Parse(bytes.NewReader(got))
+	if err != nil {
+		t.Fatal(err)
+	}
+	marked := map[string]bool{}
+	var walk func(*nethtml.Node)
+	walk = func(node *nethtml.Node) {
+		if node.Type == nethtml.ElementNode {
+			id, marker := "", false
+			for _, attr := range node.Attr {
+				if attr.Key == "id" {
+					id = attr.Val
+				}
+				if attr.Key == "data-mail2receipt-emphasis" {
+					marker = true
+				}
+			}
+			if marker {
+				marked[id] = true
+			}
+		}
+		for child := node.FirstChild; child != nil; child = child.NextSibling {
+			walk(child)
+		}
+	}
+	walk(root)
+	if !marked["first"] || !marked["second"] || !marked["punctuation"] {
+		t.Errorf("approved prefix containers were not all marked")
+	}
+	if marked["substring"] || marked["yourself"] || marked["authorize-today"] || marked["other"] {
+		t.Errorf("non-prefix container was marked")
+	}
+	css := string(got)
+	for _, want := range []string{`[data-mail2receipt-emphasis]`, `[data-mail2receipt-emphasis] *`, `font-size: 12px !important`, `line-height: 18px !important`} {
+		if !strings.Contains(css, want) {
+			t.Errorf("injected CSS missing %q", want)
+		}
+	}
+}
+
+func TestPrepareForcesEmphasisInlineOnContainerAndDescendants(t *testing.T) {
+	const input = `<html><head><style>#target, #child { font-size:40px !important; line-height:2 !important }</style></head><body><div id="target" style="color:red;font-size:30px !important;line-height:3!important">See your details <span id="child" style="font-size:20px!important;line-height:4 !important;font-weight:bold">now</span></div></body></html>`
+	got, err := Prepare(message.Document{HTML: []byte(input)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	root, err := nethtml.Parse(bytes.NewReader(got))
+	if err != nil {
+		t.Fatal(err)
+	}
+	styles := map[string]string{}
+	var walk func(*nethtml.Node)
+	walk = func(node *nethtml.Node) {
+		id, style := "", ""
+		for _, attr := range node.Attr {
+			if attr.Key == "id" {
+				id = attr.Val
+			}
+			if attr.Key == "style" {
+				style = attr.Val
+			}
+		}
+		if id != "" {
+			styles[id] = style
+		}
+		for child := node.FirstChild; child != nil; child = child.NextSibling {
+			walk(child)
+		}
+	}
+	walk(root)
+	for _, id := range []string{"target", "child"} {
+		style := styles[id]
+		if strings.Count(strings.ToLower(style), "font-size:") != 1 || strings.Count(strings.ToLower(style), "line-height:") != 1 {
+			t.Errorf("%s retained competing typography declarations: %q", id, style)
+		}
+		if !strings.HasSuffix(style, "font-size:12px !important;line-height:18px !important") {
+			t.Errorf("%s does not end with forced typography: %q", id, style)
+		}
+	}
+}
+
+func TestPrepareDoesNotApplyTypographyInsideSrcdoc(t *testing.T) {
+	nested := `<html><head><style>.x{font-size:10px}</style></head><body><div style="font-size:8pt">See your details</div></body></html>`
+	input := `<html><head></head><body><iframe srcdoc="` + stdhtml.EscapeString(nested) + `"></iframe></body></html>`
+	got, err := Prepare(message.Document{HTML: []byte(input)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(got)
+	for _, unwanted := range []string{"10.5px", "8.4pt"} {
+		if strings.Contains(text, unwanted) {
+			t.Errorf("nested srcdoc received top-level typography transformation %q", unwanted)
+		}
+	}
+	if count := strings.Count(text, "data-mail2receipt-emphasis"); count != 2 {
+		t.Errorf("emphasis marker count = %d, want only the two top-level CSS selectors", count)
 	}
 }
 

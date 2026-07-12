@@ -99,7 +99,7 @@ func TestVerboseReportsScale(t *testing.T) {
 	if code := app.run(context.Background(), []string{"--verbose", input}, &stdout, io.Discard); code != 0 {
 		t.Fatalf("exit = %d", code)
 	}
-	if !strings.Contains(stdout.String(), "0.79") {
+	if !strings.Contains(stdout.String(), "1.00") {
 		t.Fatalf("stdout = %q", stdout.String())
 	}
 }
@@ -189,7 +189,7 @@ func successRunner() runner {
 		prepare:     func(message.Document) ([]byte, error) { return []byte("prepared"), nil },
 		findBrowser: func(func(string) string, func(string) bool) (string, error) { return "browser", nil },
 		render: func(context.Context, string, string) (browser.Result, error) {
-			return browser.Result{PDF: []byte("pdf"), Scale: 0.79}, nil
+			return browser.Result{PDF: []byte("pdf"), Scale: 1.0}, nil
 		},
 		verify: func([]byte) error { return nil },
 	}

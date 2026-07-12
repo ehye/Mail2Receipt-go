@@ -64,6 +64,15 @@ the declaration is the text `color` property. This removes the receipt's gray
 backgrounds and separators while preserving text colors. Other style
 declarations are unchanged.
 
+Before measurement, numeric CSS `font-size` declarations in the top-level
+document are increased by 5%. Unsupported or complex `font-size` values remain
+unchanged, and typography inside nested `srcdoc` documents is not modified.
+Selected footer and legal containers recognized by approved normalized text
+prefixes are forced to a 12 px font size and 18 px line height for both the
+containers and their descendants. Source-authored copies of the private
+emphasis marker are stripped before trusted markers are added to selected
+containers.
+
 ## Browser
 
 The program discovers Microsoft Edge first and Google Chrome second in their
@@ -87,16 +96,16 @@ running and makes the set of image resources deterministic before printing.
 
 CDP `PrintToPDF` sets A5 portrait dimensions explicitly (148 x 210 mm), prints
 backgrounds, and omits browser headers and footers. Print CSS removes default
-body margins and applies an 8 mm page margin while preserving the receipt's
-existing HTML and inline styles.
+body margins and applies a 2 mm page margin, yielding a 144 x 206 mm printable
+area while preserving the receipt's remaining HTML and inline styles. CDP PDF
+margins remain zero because CSS owns the page margin.
 
-The initial scale target is 0.79 and will be tested against `receipt.eml`.
-Before printing, the renderer measures the complete content dimensions against
-the printable A5 area and reduces the scale when needed. Scale never exceeds
-0.79 and never falls below 0.50. If all content cannot fit at 0.50, conversion
-fails rather than clipping content. After rendering, the program verifies the
-PDF is nonempty and contains exactly one page before moving it to the requested
-destination.
+Fitting starts at scale 1.0. Before printing, the renderer measures the complete
+content dimensions against the printable A5 area and reduces the scale when
+needed. Scale never exceeds 1.0 and never falls below 0.50. If all content
+cannot fit at 0.50, conversion fails rather than clipping content. After
+rendering, the program verifies the PDF is nonempty and contains exactly one
+page before moving it to the requested destination.
 
 Output is first written in the destination directory under a temporary name,
 then atomically renamed to avoid leaving a partial output.
@@ -120,15 +129,16 @@ MIME implementation details across packages.
 Unit tests cover nested MIME structures, HTML preference, Base64,
 quoted-printable, charset conversion, malformed messages, missing HTML,
 CID replacement, embedded-logo replacement, remote image removal, style
-cleanup, missing CID parts, resource limits, and output overwrite rules.
+cleanup, top-level typography adjustment, nested `srcdoc` isolation, selected
+footer and legal typography, private-marker stripping, missing CID parts,
+resource limits, and output overwrite rules.
 
 Browser integration tests verify HTTP(S) requests are blocked, embedded images
 render without network access, and one-page scaling still works. Tests that
 require Edge or Chrome skip with an explicit reason if neither browser exists.
 
 An end-to-end test converts `receipt.eml` and checks that the output is a
-nonempty, one-page A5 PDF. The test records the selected scale so the target
-near 0.79 can be tuned from evidence rather than assumed.
+nonempty, exactly one-page A5 portrait PDF within the approved scale range.
 
 Release verification runs all tests, builds a stripped Windows executable, and
 fails if its size exceeds 20 MB.

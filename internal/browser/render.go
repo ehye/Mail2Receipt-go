@@ -18,10 +18,10 @@ import (
 )
 
 const (
-	maxScale        = 0.79
+	maxScale        = 1.0
 	minScale        = 0.50
-	printableWidth  = 132 * 96 / 25.4
-	printableHeight = 194 * 96 / 25.4
+	printableWidth  = 144 * 96 / 25.4
+	printableHeight = 206 * 96 / 25.4
 )
 
 var pdfPagePattern = regexp.MustCompile(`/Type\s*/Page(?:\s|[/<])`)
@@ -52,7 +52,7 @@ func renderWithInspection(ctx context.Context, executable, htmlPath string, insp
 		chromedp.Flag("no-proxy-server", true),
 		chromedp.Flag("no-first-run", true),
 		chromedp.Flag("no-default-browser-check", true),
-		chromedp.WindowSize(int(math.Ceil(printableWidth)), int(math.Ceil(printableHeight))),
+		chromedp.WindowSize(int(math.Floor(printableWidth)), int(math.Floor(printableHeight))),
 	)
 	allocCtx, cancelAllocator := chromedp.NewExecAllocator(ctx, opts...)
 	defer cancelAllocator()
