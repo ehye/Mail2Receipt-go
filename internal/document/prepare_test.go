@@ -2,22 +2,57 @@ package document
 
 import (
 	"bytes"
+	"encoding/base64"
 	"errors"
 	stdhtml "html"
+	"image"
+	"image/color"
+	"image/gif"
+	"image/jpeg"
+	"image/png"
 	"strings"
 	"testing"
 
 	"mail2receipt/internal/message"
 )
 
+func tinyImage(t *testing.T, mediaType string) []byte {
+	t.Helper()
+	img := image.NewRGBA(image.Rect(0, 0, 1, 1))
+	img.Set(0, 0, color.RGBA{R: 0x12, G: 0x34, B: 0x56, A: 0xff})
+	var data bytes.Buffer
+	var err error
+	switch mediaType {
+	case "image/png":
+		err = png.Encode(&data, img)
+	case "image/jpeg":
+		err = jpeg.Encode(&data, img, nil)
+	case "image/gif":
+		err = gif.Encode(&data, img, nil)
+	default:
+		t.Fatalf("unsupported test media type %q", mediaType)
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	return data.Bytes()
+}
+
+func imageDataURL(mediaType string, data []byte) string {
+	return "data:" + mediaType + ";base64," + base64.StdEncoding.EncodeToString(data)
+}
+
 func TestPrepareInlinesCIDReferences(t *testing.T) {
+	gifData := tinyImage(t, "image/gif")
+	pngData := tinyImage(t, "image/png")
+	jpegData := tinyImage(t, "image/jpeg")
 	doc := message.Document{
 		HTML: []byte(`<html><head></head><body background="CID:Background@ID"><img src="cid:Logo@ID" srcset="CID:Small@ID 1x, https://example.com/large.png 2x"><div style="background-image: url('cId:Tile@ID')"></div></body></html>`),
 		CID: map[string]message.Asset{
-			"background@id": {MediaType: "image/gif", Data: []byte{1}},
-			"logo@id":       {MediaType: "image/png", Data: []byte{1, 2, 3}},
-			"small@id":      {MediaType: "image/jpeg", Data: []byte{2}},
-			"tile@id":       {MediaType: "image/webp", Data: []byte{3}},
+			"background@id": {MediaType: "image/gif", Data: gifData},
+			"logo@id":       {MediaType: "image/png", Data: pngData},
+			"small@id":      {MediaType: "image/jpeg", Data: jpegData},
+			"tile@id":       {MediaType: "image/png", Data: pngData},
 		},
 	}
 
@@ -26,10 +61,9 @@ func TestPrepareInlinesCIDReferences(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, want := range []string{
-		`data:image/gif;base64,AQ==`,
-		`data:image/png;base64,AQID`,
-		`data:image/jpeg;base64,Ag== 1x`,
-		`data:image/webp;base64,Aw==`,
+		imageDataURL("image/gif", gifData),
+		imageDataURL("image/png", pngData),
+		imageDataURL("image/jpeg", jpegData) + ` 1x`,
 	} {
 		if !bytes.Contains(got, []byte(want)) {
 			t.Errorf("prepared HTML does not contain %q", want)
@@ -41,10 +75,11 @@ func TestPrepareInlinesCIDReferences(t *testing.T) {
 }
 
 func TestPrepareLooksUpCIDAssetsCaseInsensitively(t *testing.T) {
+	pngData := tinyImage(t, "image/png")
 	doc := message.Document{
 		HTML: []byte(`<img src="cid:logo@example">`),
 		CID: map[string]message.Asset{
-			"Logo@Example": {MediaType: "image/png", Data: []byte{1, 2, 3}},
+			"Logo@Example": {MediaType: "image/png", Data: pngData},
 		},
 	}
 
@@ -52,17 +87,18 @@ func TestPrepareLooksUpCIDAssetsCaseInsensitively(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !bytes.Contains(got, []byte(`data:image/png;base64,AQID`)) {
+	if !bytes.Contains(got, []byte(imageDataURL("image/png", pngData))) {
 		t.Fatalf("CID was not replaced: %s", got)
 	}
 }
 
 func TestPreparePreservesCommaBearingSrcsetURLs(t *testing.T) {
+	pngData := tinyImage(t, "image/png")
 	const remote = `https://example.com/image,cid:not-a-candidate.png?crop=1,2 1x`
 	doc := message.Document{
 		HTML: []byte(`<img srcset="` + remote + `, cid:Logo@ID 2x">`),
 		CID: map[string]message.Asset{
-			"logo@id": {MediaType: "image/png", Data: []byte{1, 2, 3}},
+			"logo@id": {MediaType: "image/png", Data: pngData},
 		},
 	}
 
@@ -73,7 +109,7 @@ func TestPreparePreservesCommaBearingSrcsetURLs(t *testing.T) {
 	if bytes.Contains(got, []byte(remote)) {
 		t.Errorf("prepared HTML retained remote srcset URL: %s", got)
 	}
-	if !bytes.Contains(got, []byte(`data:image/png;base64,AQID 2x`)) {
+	if !bytes.Contains(got, []byte(imageDataURL("image/png", pngData)+` 2x`)) {
 		t.Errorf("prepared HTML does not contain CID candidate: %s", got)
 	}
 }
@@ -159,6 +195,7 @@ func TestPrepareEmbedsKnownLogosAndRemovesRemoteImages(t *testing.T) {
 }
 
 func TestPrepareRemovesAllNonEmbeddedResources(t *testing.T) {
+	gifData := tinyImage(t, "image/gif")
 	const input = `<html><head>
 <base href="C:\private\receipts\">
 <link rel="stylesheet" href="//files.example/receipt.css">
@@ -175,7 +212,7 @@ func TestPrepareRemovesAllNonEmbeddedResources(t *testing.T) {
 
 	got, err := Prepare(message.Document{
 		HTML: []byte(input),
-		CID:  map[string]message.Asset{"safe@id": {MediaType: "image/gif", Data: []byte{1}}},
+		CID:  map[string]message.Asset{"safe@id": {MediaType: "image/gif", Data: gifData}},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -187,7 +224,7 @@ func TestPrepareRemovesAllNonEmbeddedResources(t *testing.T) {
 		}
 	}
 	for _, safe := range []string{
-		"data:image/gif;base64,AQ== 2x",
+		imageDataURL("image/gif", gifData) + " 2x",
 		"data:image/png;base64,",
 		`href="file:///C:/navigation"`,
 		`href="//example.com/map"`,
@@ -204,7 +241,7 @@ func TestPrepareDecodesCSSResourceEscapes(t *testing.T) {
 .escaped-identifier { background: u\72l(local.png) }
 .escaped-scheme { background: url(h\74tps://assets.example/image.png) }
 @import u\72l(\\server\share\receipt.css);
-.safe { background:url(data:image/png;base64,AQID); color: navy }
+.source-data { background:url(data:image/png;base64,AQID); color: navy }
 </style></head><body style="background:u\72l(file:///C:/private/tile.png);color:green"></body></html>`
 
 	got, err := Prepare(message.Document{HTML: []byte(input)})
@@ -217,7 +254,10 @@ func TestPrepareDecodesCSSResourceEscapes(t *testing.T) {
 			t.Errorf("prepared HTML retained escaped resource marker %q", unsafe)
 		}
 	}
-	for _, safe := range []string{"data:image/png;base64,AQID", "color: navy", "color:green"} {
+	if strings.Contains(text, "data:image/png;base64,AQID") {
+		t.Fatal("prepared HTML retained source-authored data URL")
+	}
+	for _, safe := range []string{"color: navy", "color:green"} {
 		if !strings.Contains(text, safe) {
 			t.Errorf("prepared HTML removed safe CSS %q", safe)
 		}
@@ -230,9 +270,9 @@ func TestPrepareFiltersImageSetStringResources(t *testing.T) {
 		value string
 		keep  bool
 	}{
-		{name: "safe strings", value: `image-set("data:image/png;base64,AQID" type("image/png") 1x, 'data:image/webp;base64,BAUG' 2x)`, keep: true},
-		{name: "safe URL entries", value: `image-set(url("data:image/png;base64,AQID") 1x, url(data:image/webp;base64,BAUG) 2x)`, keep: true},
-		{name: "safe vendor function", value: `-webkit-image-set("data:image/png;base64,AQID" 1x)`, keep: true},
+		{name: "source data strings", value: `image-set("data:image/png;base64,AQID" type("image/png") 1x, 'data:image/gif;base64,BAUG' 2x)`, keep: false},
+		{name: "source data URL entries", value: `image-set(url("data:image/png;base64,AQID") 1x, url(data:image/gif;base64,BAUG) 2x)`, keep: false},
+		{name: "source data vendor function", value: `-webkit-image-set("data:image/png;base64,AQID" 1x)`, keep: false},
 		{name: "unrelated function suffix", value: `my-image-set("safe string")`, keep: true},
 		{name: "file", value: `image-set("file:///C:/private/image.png" 1x)`, keep: false},
 		{name: "UNC", value: `image-set("\\server\share\image.png" 1x)`, keep: false},
@@ -268,6 +308,7 @@ func TestPrepareFiltersImageSetStringResources(t *testing.T) {
 }
 
 func TestPrepareNormalizesOfflineImageReferences(t *testing.T) {
+	gifData := tinyImage(t, "image/gif")
 	doc := message.Document{
 		HTML: []byte(`<html><head><style>
 @media print { .cid { background: url("cid:tile@id"); } }
@@ -276,7 +317,7 @@ func TestPrepareNormalizesOfflineImageReferences(t *testing.T) {
 <img srcset="https://images.example/remote.png 1x, ./google-play-crm-logo-transparent-w192px-h192px-2x.png 2x, cid:tile@id 3x">
 <div style="background-image: url(https://images.example/inline.png); content: 'a;b:c'; color: red"></div>
 </body></html>`),
-		CID: map[string]message.Asset{"tile@id": {MediaType: "image/gif", Data: []byte{1}}},
+		CID: map[string]message.Asset{"tile@id": {MediaType: "image/gif", Data: gifData}},
 	}
 
 	got, err := Prepare(doc)
@@ -289,8 +330,8 @@ func TestPrepareNormalizesOfflineImageReferences(t *testing.T) {
 	}
 	for _, want := range []string{
 		"data:image/png;base64,",
-		"data:image/gif;base64,AQ== 3x",
-		`url("data:image/gif;base64,AQ==")`,
+		imageDataURL("image/gif", gifData) + " 3x",
+		`url("` + imageDataURL("image/gif", gifData) + `")`,
 		`content: &#39;a;b:c&#39;`,
 		`color: red`,
 		`color: blue`,
@@ -588,5 +629,128 @@ func TestPrepareRemovesMalformedCIDResources(t *testing.T) {
 	}
 	if bytes.Contains(got, []byte(`cid:`)) {
 		t.Fatalf("malformed CID resource was retained: %s", got)
+	}
+}
+
+func TestPrepareStripsSourceAuthoredDataImagesFromLoadBearingLocations(t *testing.T) {
+	const data = `data:image/png;base64,AQID`
+	const svg = `data:image/svg+xml,%3Csvg%3E%3Cimage%20href%3D%22https%3A%2F%2Fprivate.example%2Fnested.png%22%2F%3E%3C%2Fsvg%3E`
+	input := `<html><head><style>
+.url { background-image:url(` + data + `); color:navy }
+.set { background-image:image-set("` + data + `" 1x, url("cid:trusted") 2x); color:green }
+.escaped { background-image:u\72l(d\61ta:image/png;base64,AQID); color:purple }
+</style></head><body background="` + data + `">
+<img src="` + data + `" srcset="` + data + ` 1x, cid:trusted 2x">
+<object data="` + svg + `"></object><video poster="` + data + `"></video>
+<svg><image href="` + svg + `"></image></svg>
+<div style="background:url('` + data + `');background-image:-webkit-image-set('` + data + `' 1x, url(cid:trusted) 2x);color:red"></div>
+</body></html>`
+	pngData := tinyImage(t, "image/png")
+
+	got, err := Prepare(message.Document{
+		HTML: []byte(input),
+		CID:  map[string]message.Asset{"trusted": {MediaType: "image/png", Data: pngData}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(got)
+	for _, unsafe := range []string{data, "data:image/svg+xml", "private.example", `d\61ta`, `u\72l`} {
+		if strings.Contains(strings.ToLower(text), strings.ToLower(unsafe)) {
+			t.Errorf("prepared HTML retained source-authored image marker %q", unsafe)
+		}
+	}
+	trusted := imageDataURL("image/png", pngData)
+	if count := strings.Count(text, trusted); count != 1 {
+		t.Errorf("trusted CID occurrence count = %d, want 1", count)
+	}
+	for _, safe := range []string{"color:navy", "color:green", "color:purple", "color:red"} {
+		if !strings.Contains(text, safe) {
+			t.Errorf("prepared HTML removed safe declaration %q", safe)
+		}
+	}
+}
+
+func TestPrepareValidatesReferencedCIDImageData(t *testing.T) {
+	valid := map[string][]byte{
+		"image/png":  tinyImage(t, "image/png"),
+		"image/jpeg": tinyImage(t, "image/jpeg"),
+		"image/gif":  tinyImage(t, "image/gif"),
+	}
+	for mediaType, data := range valid {
+		t.Run(mediaType, func(t *testing.T) {
+			got, err := Prepare(message.Document{
+				HTML: []byte(`<img src="cid:asset">`),
+				CID:  map[string]message.Asset{"asset": {MediaType: mediaType, Data: data}},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.Contains(got, []byte(imageDataURL(mediaType, data))) {
+				t.Fatal("validated CID was not embedded")
+			}
+		})
+	}
+
+	tests := []struct {
+		name      string
+		mediaType string
+		data      []byte
+	}{
+		{name: "declared and decoded mismatch", mediaType: "image/jpeg", data: valid["image/png"]},
+		{name: "corrupt supported image", mediaType: "image/png", data: []byte("private-corrupt-image")},
+		{name: "declared SVG", mediaType: "image/svg+xml", data: []byte(`<svg><image href="https://private.example/nested"/></svg>`)},
+		{name: "SVG declared as PNG", mediaType: "image/png", data: []byte(`<svg><image href="https://private.example/nested"/></svg>`)},
+		{name: "unsupported decoded format", mediaType: "image/webp", data: []byte("private-webp-image")},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := Prepare(message.Document{
+				HTML: []byte(`<img src="cid:private-cid">`),
+				CID:  map[string]message.Asset{"private-cid": {MediaType: tt.mediaType, Data: tt.data}},
+			})
+			if err == nil {
+				t.Fatal("Prepare returned nil error")
+			}
+			for _, sensitive := range []string{"private-cid", "private-corrupt-image", "private.example", "private-webp-image"} {
+				if strings.Contains(err.Error(), sensitive) {
+					t.Fatalf("error leaks sensitive input %q: %v", sensitive, err)
+				}
+			}
+		})
+	}
+}
+
+func TestPrepareDoesNotValidateUnreferencedCIDAssets(t *testing.T) {
+	got, err := Prepare(message.Document{
+		HTML: []byte(`<html><head></head><body><p>receipt</p></body></html>`),
+		CID: map[string]message.Asset{
+			"unused-corrupt": {MediaType: "image/png", Data: []byte("not an image")},
+			"unused-svg":     {MediaType: "image/svg+xml", Data: []byte(`<svg/>`)},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(got, []byte("receipt")) {
+		t.Fatal("prepared HTML lost document content")
+	}
+}
+
+func TestPrepareValidatesCIDReferencedBesideSourceData(t *testing.T) {
+	tests := []string{
+		`background-image:image-set("data:image/png;base64,AQID" 1x, url(cid:bad) 2x)`,
+		`background-image:image-set("data:image/png;base64,AQID" 1x, "cid:bad" 2x)`,
+	}
+	for _, style := range tests {
+		t.Run(style, func(t *testing.T) {
+			_, err := Prepare(message.Document{
+				HTML: []byte(`<div style='` + style + `'></div>`),
+				CID:  map[string]message.Asset{"bad": {MediaType: "image/png", Data: []byte("corrupt")}},
+			})
+			if !errors.Is(err, ErrNonImageCID) {
+				t.Fatalf("error = %v, want ErrNonImageCID", err)
+			}
+		})
 	}
 }

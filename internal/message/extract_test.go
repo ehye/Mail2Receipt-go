@@ -2,8 +2,12 @@ package message
 
 import (
 	"bytes"
+	"encoding/base64"
 	"errors"
 	"fmt"
+	"image"
+	"image/color"
+	"image/png"
 	"io"
 	"math"
 	"strings"
@@ -62,9 +66,16 @@ func TestExtractConvertsDeclaredCharsetToUTF8(t *testing.T) {
 }
 
 func TestExtractIndexesImagesByNormalizedContentID(t *testing.T) {
+	img := image.NewRGBA(image.Rect(0, 0, 1, 1))
+	img.Set(0, 0, color.RGBA{R: 1, A: 0xff})
+	var encoded bytes.Buffer
+	if err := png.Encode(&encoded, img); err != nil {
+		t.Fatal(err)
+	}
 	raw := "MIME-Version: 1.0\r\nContent-Type: multipart/related; boundary=x\r\n\r\n" +
 		"--x\r\nContent-Type: text/html\r\n\r\n<img src=\"cid:Logo@Example\">\r\n" +
-		"--x\r\nContent-Type: image/png\r\nContent-ID: < Logo@Example >\r\nContent-Transfer-Encoding: base64\r\n\r\nAQID\r\n--x--\r\n"
+		"--x\r\nContent-Type: image/png\r\nContent-ID: < Logo@Example >\r\nContent-Transfer-Encoding: base64\r\n\r\n" +
+		base64.StdEncoding.EncodeToString(encoded.Bytes()) + "\r\n--x--\r\n"
 
 	got, err := Extract(strings.NewReader(raw), 1<<20)
 	if err != nil {
@@ -74,7 +85,7 @@ func TestExtractIndexesImagesByNormalizedContentID(t *testing.T) {
 	if !ok {
 		t.Fatalf("CID keys = %v", got.CID)
 	}
-	if asset.MediaType != "image/png" || !bytes.Equal(asset.Data, []byte{1, 2, 3}) {
+	if asset.MediaType != "image/png" || !bytes.Equal(asset.Data, encoded.Bytes()) {
 		t.Fatalf("asset = %#v", asset)
 	}
 }

@@ -5,6 +5,10 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"image"
+	_ "image/gif"
+	_ "image/jpeg"
+	_ "image/png"
 	"regexp"
 	"strconv"
 	"strings"
@@ -174,10 +178,20 @@ func replaceCID(value string, assets map[string]message.Asset) (string, error) {
 	if !ok {
 		return "", ErrMissingCID
 	}
-	if !strings.HasPrefix(strings.ToLower(asset.MediaType), "image/") {
+	mediaType := strings.ToLower(strings.TrimSpace(asset.MediaType))
+	wantFormat := map[string]string{
+		"image/png":  "png",
+		"image/jpeg": "jpeg",
+		"image/gif":  "gif",
+	}[mediaType]
+	if wantFormat == "" {
 		return "", ErrNonImageCID
 	}
-	return "data:" + asset.MediaType + ";base64," + base64.StdEncoding.EncodeToString(asset.Data), nil
+	_, format, err := image.DecodeConfig(bytes.NewReader(asset.Data))
+	if err != nil || format != wantFormat {
+		return "", ErrNonImageCID
+	}
+	return "data:" + mediaType + ";base64," + base64.StdEncoding.EncodeToString(asset.Data), nil
 }
 
 func lookupAsset(assets map[string]message.Asset, id string) (message.Asset, bool) {
@@ -199,9 +213,6 @@ func normalizeImageReference(value string, assets map[string]message.Asset) (str
 	}
 	if logo, ok := embeddedLogo(value); ok {
 		return logo, true, nil
-	}
-	if isImageDataURL(value) {
-		return value, true, nil
 	}
 	return "", false, nil
 }
@@ -388,13 +399,20 @@ func keepDeclaration(property, value string) bool {
 }
 
 func normalizeDeclarations(value string, assets map[string]message.Asset) (string, error) {
-	replaced, err := replaceStyleURLs(value, assets)
-	if err != nil {
-		return "", err
-	}
-	parts := splitCSS(replaced, ';')
+	parts := splitCSS(value, ';')
 	kept := parts[:0]
 	for _, declaration := range parts {
+		if err := validateCSSCIDReferences(declaration, assets); err != nil {
+			return "", err
+		}
+		if containsSourceDataImage(declaration) {
+			continue
+		}
+		replaced, err := replaceStyleURLs(declaration, assets)
+		if err != nil {
+			return "", err
+		}
+		declaration = replaced
 		colon := indexCSS(declaration, ':')
 		if colon < 0 {
 			if !containsNonEmbeddedCSSURL(declaration) {
@@ -407,6 +425,80 @@ func normalizeDeclarations(value string, assets map[string]message.Asset) (strin
 		}
 	}
 	return strings.Join(kept, ";"), nil
+}
+
+func validateCSSCIDReferences(value string, assets map[string]message.Asset) error {
+	decoded := decodeCSSEscapes(value)
+	for _, match := range cssURLPattern.FindAllString(decoded, -1) {
+		open := strings.IndexByte(match, '(')
+		inner := strings.Trim(strings.TrimSpace(match[open+1:len(match)-1]), "'\"")
+		if _, err := replaceCID(inner, assets); err != nil {
+			return err
+		}
+	}
+	for _, location := range imageSetPattern.FindAllStringIndex(decoded, -1) {
+		if location[0] > 0 && isCSSIdentifierByte(decoded[location[0]-1]) {
+			continue
+		}
+		open := location[1] - 1
+		close := matchingCSSParen(decoded, open)
+		if close < 0 {
+			continue
+		}
+		for _, candidate := range splitCSS(decoded[open+1:close], ',') {
+			candidate = trimCSSSpaceAndComments(candidate)
+			if len(candidate) == 0 || candidate[0] != '\'' && candidate[0] != '"' {
+				continue
+			}
+			quote := candidate[0]
+			end := 1
+			for end < len(candidate) && candidate[end] != quote {
+				end++
+			}
+			if end < len(candidate) {
+				if _, err := replaceCID(candidate[1:end], assets); err != nil {
+					return err
+				}
+			}
+		}
+	}
+	return nil
+}
+
+func containsSourceDataImage(value string) bool {
+	decoded := decodeCSSEscapes(value)
+	for _, match := range cssURLPattern.FindAllString(decoded, -1) {
+		open := strings.IndexByte(match, '(')
+		inner := strings.Trim(strings.TrimSpace(match[open+1:len(match)-1]), "'\"")
+		if isImageDataURL(inner) {
+			return true
+		}
+	}
+	for _, location := range imageSetPattern.FindAllStringIndex(decoded, -1) {
+		if location[0] > 0 && isCSSIdentifierByte(decoded[location[0]-1]) {
+			continue
+		}
+		open := location[1] - 1
+		close := matchingCSSParen(decoded, open)
+		if close < 0 {
+			return true
+		}
+		for _, candidate := range splitCSS(decoded[open+1:close], ',') {
+			candidate = trimCSSSpaceAndComments(candidate)
+			if len(candidate) == 0 || candidate[0] != '\'' && candidate[0] != '"' {
+				continue
+			}
+			quote := candidate[0]
+			end := 1
+			for end < len(candidate) && candidate[end] != quote {
+				end++
+			}
+			if end < len(candidate) && isImageDataURL(candidate[1:end]) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func splitCSS(value string, separator byte) []string {
