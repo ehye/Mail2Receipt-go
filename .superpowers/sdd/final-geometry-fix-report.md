@@ -245,9 +245,7 @@ PASS; only line-ending conversion warnings were emitted
 ### Exact Text Geometry Policy
 
 - Retain every visible element client rectangle, including zero-width and zero-height rectangles, in the document-coordinate union. Their anchor coordinates therefore participate in non-finite, negative, and positive-extent checks.
-- Build an accepted-element chain in document order. An element is accepted for text traversal only when its parent is accepted, it is visible, it has no rejected opaque/custom rendering surface or known ink-overflow effect, and it has no rejected animation/transition timing.
-- For each accepted element, inspect each direct non-whitespace text child with a DOM Range and union every Range client rectangle after adding the current document scroll offsets.
-- Nested accepted text is covered when its own parent element is visited. Text below hidden, opaque, custom-rendered, paint-rejected, or timing-rejected ancestors is not traversed; those surfaces already fail closed or do not paint.
+- The visibility follow-up below supersedes the original accepted-ancestor text traversal. Every non-whitespace document text node is now ranged independently of ancestor acceptance.
 - Chromium Range rectangles provide the actual laid-out text geometry, including fixed and transformed ancestor effects. No font-width approximation is used.
 - Empty zero-area elements remain accepted when their retained anchor geometry is finite and nonnegative and no other conservative rejection applies.
 
@@ -257,3 +255,53 @@ PASS; only line-ending conversion warnings were emitted
 - Existing print-media timing, pseudo, list, opaque-surface, and visual-ink controls remain in force. Network blocking, no-proxy startup, disabled JavaScript, A5 output, inclusive scale limits, and exact one-page validation are unchanged.
 - The approved receipt remains accepted at the established scale without fixture disclosure.
 - Range geometry measures layout rectangles, while the separately enumerated ink-overflow policy continues to reject known paint that can extend beyond those rectangles.
+
+## Visibility Override Follow-up
+
+Code/test commit: `4669631` (`Measure visibility-overridden text`).
+
+### TDD Evidence
+
+RED command:
+
+```text
+go test ./internal/browser -count=1 -run "TestRender(RejectsNegativeTextWithVisibilityOverride|RejectsFarPositiveTextWithVisibilityOverride|FitsTransformedTextWithVisibilityOverride|IgnoresFullyHiddenTextGeometry|RejectsVisibleOpaqueDescendantUnderHiddenAncestor)$" -v
+```
+
+Before implementation, negative and transformed text restored with `visibility:visible` under a fixed zero-area hidden ancestor escaped measurement. Far-positive text with a normal span was already rejected by its element rectangle, fully hidden text was already accepted, and a visible native control under a hidden ancestor was already rejected by the independent element-surface policy.
+
+The first implementation pass revealed that this Chromium version can return Range layout rectangles for fully `visibility:hidden` text. The fully-hidden control failed until inclusion was conditioned on the text node parent’s computed visibility.
+
+GREEN evidence:
+
+```text
+go test ./internal/browser -count=1 -v
+PASS (42.555s package result)
+
+go test ./cmd/mail2receipt -count=1 -run TestReceiptEndToEnd -v -timeout 90s
+PASS; reported scale 0.77
+
+go test ./... -count=1 -timeout 120s
+PASS for all packages
+
+go vet ./...
+PASS (no output)
+
+git diff --check
+PASS; only line-ending conversion warnings were emitted
+```
+
+### Corrected Visibility Policy
+
+- Traverse every non-whitespace text node under the document root and create a DOM Range without accepted-parent, opaque-parent, or ancestor-visibility gating.
+- Chromium Range geometry is layout geometry and may exist for `visibility:hidden` text. After creating the Range, include its rectangles unless the text node parent’s computed visibility is `hidden` or `collapse`.
+- Because computed visibility reflects inheritance and local override, fully hidden text contributes no bounds while `visibility:visible` text beneath a hidden ancestor is measured.
+- Continue adding document scroll offsets to every included Range rectangle, preserving fixed and transformed ancestor geometry in document coordinates.
+- Element-surface rejection remains a separate per-element pass. A visible opaque, list, animated, transitioned, pseudo-generated, or known ink-overflow descendant is still rejected based on its own computed style even when an ancestor is hidden.
+
+### Self-review And Residual Concern
+
+- No accepted-ancestor chain remains in text measurement.
+- Print media, network blocking, no-proxy startup, disabled JavaScript, A5 output, inclusive scale bounds, and exact one-page validation are unchanged.
+- The approved receipt remains accepted without fixture disclosure.
+- The immediate parent computed visibility check is necessary because Chromium exposes hidden text layout rectangles; it honors descendant visibility overrides but is not a claim that Range rectangles alone represent paint visibility.
