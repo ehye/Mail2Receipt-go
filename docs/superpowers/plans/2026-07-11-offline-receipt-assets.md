@@ -279,7 +279,7 @@ Expected: PASS; the HTTP server records zero requests, JavaScript remains disabl
 In `docs/superpowers/plans/2026-07-11-mail-to-a5-pdf.md`, replace every system-proxy, remote-image download, timeout, and image-failure requirement with the approved embedded-logo and offline-blocking behavior. In `AGENTS.md`, replace the stale rendering bullet with:
 
 ```markdown
-- Rendering must embed the two approved Google Play logo PNGs, remove other remote images and non-text `#EDEDED` styling, block HTTP(S), and use no proxy. It must produce A5 portrait and verify exactly one PDF page. Start fitting near 0.79 scale and do not silently clip content.
+- Rendering must embed the two approved Google Play logo PNGs, remove other remote images and non-text `#EDEDED` styling, block HTTP(S), and use no proxy. It must produce A5 portrait and verify exactly one PDF page. Fitting starts at and never exceeds scale 0.79; do not silently clip content.
 ```
 
 - [ ] **Step 7: Run complete verification**

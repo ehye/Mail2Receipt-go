@@ -72,13 +72,14 @@
 ### Task 4: Verification and Evidence
 
 **Files:**
-- Create: `.superpowers/sdd/final-application-fix-report.md`
+- Create/update as intentionally git-ignored durable session evidence: `.superpowers/sdd/final-application-fix-report.md`
 
 **Interfaces:**
-- Produces: sanitized verification evidence, self-review, commit hashes, and residual visual-comparison risk.
+- Produces: sanitized verification evidence, self-review, commit hashes, and residual visual-fidelity risk in a durable session artifact that is not committed.
 
-- [ ] Run focused tests, receipt E2E, `go test ./... -count=1 -timeout 120s`, touched-package race tests, and `go vet ./...`.
+- [ ] Run focused tests, receipt E2E, `go test ./... -count=1 -timeout 120s`, race tests for touched packages and the command package, and `go vet ./...`.
 - [ ] Build `dist/mail2receipt.exe` stripped and verify its size is below 20 MB.
 - [ ] Run drag-drop-equivalent conversion and remove only the generated root `output.pdf`.
 - [ ] Review diffs for security, fixture disclosure, API stability, and exact finding coverage.
-- [ ] Write sanitized evidence without reading or quoting `receipt.pdf`; commit only the report and intended source/test/plan files.
+- [ ] Create or update the sanitized report without reading or quoting `receipt.pdf`; do not force-add this intentionally ignored evidence artifact or change ignore rules.
+- [ ] Commit only intended tracked plans, source files, and tests; never commit fixtures, generated output, or release binaries.
