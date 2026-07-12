@@ -2,6 +2,7 @@ package pdfcheck
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"math"
 
@@ -18,7 +19,7 @@ const (
 func Verify(data []byte) error {
 	reader, err := pdf.NewReader(bytes.NewReader(data), int64(len(data)))
 	if err != nil {
-		return fmt.Errorf("invalid PDF: %w", err)
+		return errors.New("invalid PDF")
 	}
 	if pages := reader.NumPage(); pages != 1 {
 		return fmt.Errorf("invalid page count: got %d, want 1", pages)

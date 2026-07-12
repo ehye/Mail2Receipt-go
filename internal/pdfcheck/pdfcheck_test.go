@@ -14,6 +14,19 @@ func TestVerifyRejectsInvalidPDF(t *testing.T) {
 	assertVerifyErrorContains(t, []byte("not a PDF"), "invalid PDF")
 }
 
+func TestVerifyDoesNotExposeInvalidPDFContent(t *testing.T) {
+	const marker = "SENSITIVE_MARKER_7f3a9c"
+	data := []byte("%PDF-1.4\n" + marker + "\nstartxref\n9\n%%EOF\n")
+
+	err := Verify(data)
+	if err == nil || err.Error() != "invalid PDF" {
+		t.Fatalf("Verify() error = %q, want stable %q", err, "invalid PDF")
+	}
+	if strings.Contains(err.Error(), marker) {
+		t.Fatalf("Verify() error exposed input marker %q", marker)
+	}
+}
+
 func TestVerifyRejectsZeroPages(t *testing.T) {
 	assertVerifyErrorContains(t, makePDF(t, nil), "page count")
 }
@@ -28,7 +41,36 @@ func TestVerifyRejectsWrongMediaBox(t *testing.T) {
 }
 
 func TestVerifyAcceptsOneA5PortraitPage(t *testing.T) {
-	if err := Verify(makePDF(t, [][4]float64{{0, 0, 419.528, 595.276}})); err != nil {
+	assertVerifySucceeds(t, [4]float64{0, 0, 419.528, 595.276})
+}
+
+func TestVerifyAcceptsInclusiveOnePointTolerance(t *testing.T) {
+	tests := map[string][4]float64{
+		"minus one point": {0, 0, 418.528, 594.276},
+		"plus one point":  {0, 0, 420.528, 596.276},
+	}
+	for name, box := range tests {
+		t.Run(name, func(t *testing.T) {
+			assertVerifySucceeds(t, box)
+		})
+	}
+}
+
+func TestVerifyRejectsDimensionsBeyondTolerance(t *testing.T) {
+	assertVerifyErrorContains(t, makePDF(t, [][4]float64{{0, 0, 420.529, 595.276}}), "paper dimensions")
+}
+
+func TestVerifyRejectsLandscapeA5(t *testing.T) {
+	assertVerifyErrorContains(t, makePDF(t, [][4]float64{{0, 0, 595.276, 419.528}}), "paper dimensions")
+}
+
+func TestVerifyHandlesNonZeroMediaBoxOrigin(t *testing.T) {
+	assertVerifySucceeds(t, [4]float64{10, 20, 429.528, 615.276})
+}
+
+func assertVerifySucceeds(t *testing.T, box [4]float64) {
+	t.Helper()
+	if err := Verify(makePDF(t, [][4]float64{box})); err != nil {
 		t.Fatalf("Verify() error = %v", err)
 	}
 }
