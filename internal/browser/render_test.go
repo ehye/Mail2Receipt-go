@@ -55,6 +55,38 @@ func TestRenderDisablesJavaScript(t *testing.T) {
 	}
 }
 
+func TestRenderRejectsRawOpenDeclarativeShadowRoot(t *testing.T) {
+	executable := testBrowser(t)
+	body := `<div><template shadowrootmode="open"><div style="position:fixed;left:0;top:0">shadow content</div></template></div>`
+	_, err := Render(context.Background(), executable, writeHTML(t, body))
+	if err == nil || err.Error() != "content cannot fit one A5 page" {
+		t.Fatalf("Render() error = %v, want content cannot fit one A5 page", err)
+	}
+}
+
+func TestRenderPreparedDeclarativeShadowTemplatesRemainInert(t *testing.T) {
+	executable := testBrowser(t)
+	prepared, err := document.Prepare(message.Document{HTML: []byte(`<html><head></head><body>
+<div><template shadowrootmode="open"><div style="position:fixed;left:-1100px;top:0">open shadow overflow</div></template></div>
+<div><template shadowrootmode="closed" shadowrootdelegatesfocus><div style="position:fixed;left:1100px;top:0">closed shadow overflow</div></template></div>
+</body></html>`)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var hasOpenShadowRoot bool
+	result, err := renderWithInspection(context.Background(), executable, writePreparedHTML(t, prepared), chromedp.Evaluate(
+		`Array.from(document.querySelectorAll('*')).some(element => element.shadowRoot !== null)`, &hasOpenShadowRoot))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hasOpenShadowRoot {
+		t.Fatal("prepared declarative template created an open shadow root")
+	}
+	if result.Scale != maxScale {
+		t.Fatalf("Render() scale = %v, want %v for inert templates", result.Scale, maxScale)
+	}
+}
+
 func TestRenderRejectsScaleBelowMinimum(t *testing.T) {
 	executable := testBrowser(t)
 	_, err := Render(context.Background(), executable, writeHTML(t, `<div style="height:1500px;width:400px">too long</div>`))

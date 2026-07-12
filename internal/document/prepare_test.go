@@ -13,6 +13,8 @@ import (
 	"strings"
 	"testing"
 
+	nethtml "golang.org/x/net/html"
+
 	"mail2receipt/internal/message"
 )
 
@@ -40,6 +42,53 @@ func tinyImage(t *testing.T, mediaType string) []byte {
 
 func imageDataURL(mediaType string, data []byte) string {
 	return "data:" + mediaType + ";base64," + base64.StdEncoding.EncodeToString(data)
+}
+
+func TestPrepareRemovesDeclarativeShadowRootAttributes(t *testing.T) {
+	input := `<html><head></head><body>
+<div id="open"><template SHADOWROOTMODE="open" shadowrootdelegatesfocus shadowrootclonable shadowrootserializable><span>open template content</span></template></div>
+<div id="closed"><template shadowrootmode="closed" ShadowRootFutureOption="yes"><span>closed template content</span></template></div>
+<div shadowrootmode="open" shadowrootcustom="value">ordinary element</div>
+</body></html>`
+
+	prepared, err := Prepare(message.Document{HTML: []byte(input)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	reparsed, err := nethtml.Parse(bytes.NewReader(prepared))
+	if err != nil {
+		t.Fatal(err)
+	}
+	templates := 0
+	var content strings.Builder
+	var walk func(*nethtml.Node)
+	walk = func(node *nethtml.Node) {
+		if node.Type == nethtml.ElementNode {
+			if node.Data == "template" {
+				templates++
+			}
+			for _, attr := range node.Attr {
+				if strings.HasPrefix(strings.ToLower(attr.Key), "shadowroot") {
+					t.Errorf("prepared element retained declarative shadow attribute %q", attr.Key)
+				}
+			}
+		}
+		if node.Type == nethtml.TextNode {
+			content.WriteString(node.Data)
+		}
+		for child := node.FirstChild; child != nil; child = child.NextSibling {
+			walk(child)
+		}
+	}
+	walk(reparsed)
+	if templates != 2 {
+		t.Fatalf("prepared template count = %d, want 2", templates)
+	}
+	for _, want := range []string{"open template content", "closed template content", "ordinary element"} {
+		if !strings.Contains(content.String(), want) {
+			t.Errorf("prepared HTML lost inert content %q", want)
+		}
+	}
 }
 
 func TestPrepareInlinesCIDReferences(t *testing.T) {

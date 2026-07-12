@@ -173,6 +173,7 @@ func renderWithInspection(ctx context.Context, executable, htmlPath string, insp
     const timeVarying = hasTimeVariation(style);
     const surfaceRejected = style.display === 'list-item' || opaqueNamespace(element) ||
       opaqueTags.has(element.localName) || hasInkOverflow(style);
+    if (element.shadowRoot !== null) valid = false;
     if (timeVarying) valid = false;
     if (visible(style)) {
       if (surfaceRejected) valid = false;

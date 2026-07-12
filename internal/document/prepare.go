@@ -52,8 +52,12 @@ func prepareHTML(source []byte, assets map[string]message.Asset, srcdocDepth int
 			attrs := node.Attr[:0]
 			refreshTarget := node.Data == "meta" && hasMetaRefreshTarget(node.Attr)
 			for _, attr := range node.Attr {
+				name := strings.ToLower(attr.Key)
+				if strings.HasPrefix(name, "shadowroot") {
+					continue
+				}
 				keep := true
-				switch strings.ToLower(attr.Key) {
+				switch name {
 				case "data":
 					if node.Data == "object" {
 						attr.Val, keep, err = normalizeImageReference(attr.Val, assets)
