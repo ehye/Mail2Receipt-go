@@ -18,16 +18,26 @@ import (
 
 const maxMessageBytes = 25 << 20
 
-var (
-	extract     = message.Extract
-	prepare     = document.Prepare
-	findBrowser = browser.FindExecutable
-	render      = browser.Render
-	verify      = pdfcheck.Verify
-)
+type runner struct {
+	extract     func(io.Reader, int64) (message.Document, error)
+	prepare     func(message.Document) ([]byte, error)
+	findBrowser func(func(string) string, func(string) bool) (string, error)
+	render      func(context.Context, string, string) (browser.Result, error)
+	verify      func([]byte) error
+}
 
 // Run converts one .eml receipt and returns a process exit code.
 func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
+	return (runner{
+		extract:     message.Extract,
+		prepare:     document.Prepare,
+		findBrowser: browser.FindExecutable,
+		render:      browser.Render,
+		verify:      pdfcheck.Verify,
+	}).run(ctx, args, stdout, stderr)
+}
+
+func (app runner) run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	flags := flag.NewFlagSet("mail2receipt", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
 	force := flags.Bool("force", false, "replace an existing output")
@@ -68,11 +78,11 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	}
 	defer os.RemoveAll(workspace)
 
-	doc, err := extract(in, maxMessageBytes)
+	doc, err := app.extract(in, maxMessageBytes)
 	if err != nil {
 		return fail(stderr, "could not read email message")
 	}
-	html, err := prepare(doc)
+	html, err := app.prepare(doc)
 	if err != nil {
 		return fail(stderr, "could not prepare receipt")
 	}
@@ -80,15 +90,15 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	if err := os.WriteFile(htmlPath, html, 0o600); err != nil {
 		return fail(stderr, "could not prepare private workspace")
 	}
-	executable, err := findBrowser(os.Getenv, fileExists)
+	executable, err := app.findBrowser(os.Getenv, fileExists)
 	if err != nil {
 		return fail(stderr, "supported browser was not found")
 	}
-	result, err := render(ctx, executable, htmlPath)
+	result, err := app.render(ctx, executable, htmlPath)
 	if err != nil {
 		return fail(stderr, "could not render receipt")
 	}
-	if err := verify(result.PDF); err != nil {
+	if err := app.verify(result.PDF); err != nil {
 		return fail(stderr, "rendered PDF failed verification")
 	}
 	if err := publish(output, result.PDF, *force); err != nil {

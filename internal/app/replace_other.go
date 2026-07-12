@@ -2,18 +2,15 @@
 
 package app
 
-import (
-	"errors"
-	"os"
-)
+import "os"
 
 func atomicReplace(source, destination string, force bool) error {
 	if !force {
-		if _, err := os.Stat(destination); err == nil {
-			return os.ErrExist
-		} else if !errors.Is(err, os.ErrNotExist) {
+		if err := os.Link(source, destination); err != nil {
 			return err
 		}
+		_ = os.Remove(source)
+		return nil
 	}
 	return os.Rename(source, destination)
 }

@@ -40,9 +40,9 @@ func TestDefaultOutputIsBesideInput(t *testing.T) {
 	dir := t.TempDir()
 	input := filepath.Join(dir, "receipt.eml")
 	writeInput(t, input)
-	installSuccessDependencies(t)
+	app := successRunner()
 
-	if code := Run(context.Background(), []string{input}, io.Discard, io.Discard); code != 0 {
+	if code := app.run(context.Background(), []string{input}, io.Discard, io.Discard); code != 0 {
 		t.Fatalf("exit = %d", code)
 	}
 	if data, err := os.ReadFile(filepath.Join(dir, "output.pdf")); err != nil || string(data) != "pdf" {
@@ -55,9 +55,9 @@ func TestExplicitOutput(t *testing.T) {
 	input := filepath.Join(dir, "receipt.eml")
 	output := filepath.Join(dir, "chosen.pdf")
 	writeInput(t, input)
-	installSuccessDependencies(t)
+	app := successRunner()
 
-	if code := Run(context.Background(), []string{input, output}, io.Discard, io.Discard); code != 0 {
+	if code := app.run(context.Background(), []string{input, output}, io.Discard, io.Discard); code != 0 {
 		t.Fatalf("exit = %d", code)
 	}
 	if _, err := os.Stat(output); err != nil {
@@ -73,15 +73,15 @@ func TestExistingOutputRequiresForce(t *testing.T) {
 	if err := os.WriteFile(output, []byte("old"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	installSuccessDependencies(t)
+	app := successRunner()
 
-	if code := Run(context.Background(), []string{input}, io.Discard, io.Discard); code == 0 {
+	if code := app.run(context.Background(), []string{input}, io.Discard, io.Discard); code == 0 {
 		t.Fatal("exit = 0 without --force")
 	}
 	if got, _ := os.ReadFile(output); string(got) != "old" {
 		t.Fatalf("output changed to %q", got)
 	}
-	if code := Run(context.Background(), []string{"--force", input}, io.Discard, io.Discard); code != 0 {
+	if code := app.run(context.Background(), []string{"--force", input}, io.Discard, io.Discard); code != 0 {
 		t.Fatalf("force exit = %d", code)
 	}
 	if got, _ := os.ReadFile(output); string(got) != "pdf" {
@@ -93,10 +93,10 @@ func TestVerboseReportsScale(t *testing.T) {
 	dir := t.TempDir()
 	input := filepath.Join(dir, "receipt.eml")
 	writeInput(t, input)
-	installSuccessDependencies(t)
+	app := successRunner()
 	var stdout bytes.Buffer
 
-	if code := Run(context.Background(), []string{"--verbose", input}, &stdout, io.Discard); code != 0 {
+	if code := app.run(context.Background(), []string{"--verbose", input}, &stdout, io.Discard); code != 0 {
 		t.Fatalf("exit = %d", code)
 	}
 	if !strings.Contains(stdout.String(), "0.79") {
@@ -108,15 +108,15 @@ func TestTemporaryDirectoryIsCleanedAfterRenderFailure(t *testing.T) {
 	dir := t.TempDir()
 	input := filepath.Join(dir, "receipt.eml")
 	writeInput(t, input)
-	installSuccessDependencies(t)
+	app := successRunner()
 	var htmlPath string
-	render = func(_ context.Context, _, path string) (browser.Result, error) {
+	app.render = func(_ context.Context, _, path string) (browser.Result, error) {
 		htmlPath = path
 		return browser.Result{}, errors.New("https://secret.example/?account=private")
 	}
 	var stderr bytes.Buffer
 
-	if code := Run(context.Background(), []string{input}, io.Discard, &stderr); code == 0 {
+	if code := app.run(context.Background(), []string{input}, io.Discard, &stderr); code == 0 {
 		t.Fatal("exit = 0")
 	}
 	if _, err := os.Stat(filepath.Dir(htmlPath)); !os.IsNotExist(err) {
@@ -132,11 +132,11 @@ func TestVerificationFailureLeavesNoPartialDestination(t *testing.T) {
 	input := filepath.Join(dir, "receipt.eml")
 	output := filepath.Join(dir, "output.pdf")
 	writeInput(t, input)
-	installSuccessDependencies(t)
-	verify = func([]byte) error { return errors.New("decoded account 123") }
+	app := successRunner()
+	app.verify = func([]byte) error { return errors.New("decoded account 123") }
 	var stderr bytes.Buffer
 
-	if code := Run(context.Background(), []string{input}, io.Discard, &stderr); code == 0 {
+	if code := app.run(context.Background(), []string{input}, io.Discard, &stderr); code == 0 {
 		t.Fatal("exit = 0")
 	}
 	if _, err := os.Stat(output); !os.IsNotExist(err) {
@@ -154,23 +154,45 @@ func TestVerificationFailureLeavesNoPartialDestination(t *testing.T) {
 	}
 }
 
-func installSuccessDependencies(t *testing.T) {
-	t.Helper()
-	oldExtract, oldPrepare, oldFind := extract, prepare, findBrowser
-	oldRender, oldVerify := render, verify
-	t.Cleanup(func() {
-		extract, prepare, findBrowser = oldExtract, oldPrepare, oldFind
-		render, verify = oldRender, oldVerify
-	})
-	extract = func(io.Reader, int64) (message.Document, error) {
-		return message.Document{HTML: []byte("<html><head></head><body>ok</body></html>")}, nil
+func TestForceVerificationFailurePreservesExistingOutput(t *testing.T) {
+	dir := t.TempDir()
+	input := filepath.Join(dir, "receipt.eml")
+	output := filepath.Join(dir, "output.pdf")
+	writeInput(t, input)
+	sentinel := []byte("existing destination sentinel")
+	if err := os.WriteFile(output, sentinel, 0o600); err != nil {
+		t.Fatal(err)
 	}
-	prepare = func(message.Document) ([]byte, error) { return []byte("prepared"), nil }
-	findBrowser = func(func(string) string, func(string) bool) (string, error) { return "browser", nil }
-	render = func(context.Context, string, string) (browser.Result, error) {
-		return browser.Result{PDF: []byte("pdf"), Scale: 0.79}, nil
+	app := successRunner()
+	app.verify = func([]byte) error { return errors.New("verification failed") }
+
+	if code := app.run(context.Background(), []string{"--force", input}, io.Discard, io.Discard); code == 0 {
+		t.Fatal("exit = 0")
 	}
-	verify = func([]byte) error { return nil }
+	if got, err := os.ReadFile(output); err != nil || !bytes.Equal(got, sentinel) {
+		t.Fatalf("output = %q, %v", got, err)
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 2 {
+		t.Fatalf("unexpected files: %v", entries)
+	}
+}
+
+func successRunner() runner {
+	return runner{
+		extract: func(io.Reader, int64) (message.Document, error) {
+			return message.Document{HTML: []byte("<html><head></head><body>ok</body></html>")}, nil
+		},
+		prepare:     func(message.Document) ([]byte, error) { return []byte("prepared"), nil },
+		findBrowser: func(func(string) string, func(string) bool) (string, error) { return "browser", nil },
+		render: func(context.Context, string, string) (browser.Result, error) {
+			return browser.Result{PDF: []byte("pdf"), Scale: 0.79}, nil
+		},
+		verify: func([]byte) error { return nil },
+	}
 }
 
 func writeInput(t *testing.T, path string) {
