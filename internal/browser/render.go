@@ -167,7 +167,6 @@ func renderWithInspection(ctx context.Context, executable, htmlPath string, insp
     unsafeTransition(style.transitionProperty, style.transitionDuration, style.transitionDelay) ||
     (typeof style.webkitTransitionProperty === 'string' &&
       unsafeTransition(style.webkitTransitionProperty, style.webkitTransitionDuration, style.webkitTransitionDelay));
-  const acceptedElements = new WeakSet();
 
   for (const element of document.querySelectorAll('*')) {
     const style = getComputedStyle(element);
@@ -179,19 +178,6 @@ func renderWithInspection(ctx context.Context, executable, htmlPath string, insp
       if (surfaceRejected) valid = false;
       for (const rect of element.getClientRects()) {
         include(rect.left + scrollX, rect.top + scrollY, rect.right + scrollX, rect.bottom + scrollY);
-      }
-    }
-
-    const parentAccepted = element.parentElement === null || acceptedElements.has(element.parentElement);
-    if (parentAccepted && visible(style) && !surfaceRejected && !timeVarying) {
-      acceptedElements.add(element);
-      for (const node of element.childNodes) {
-        if (node.nodeType !== Node.TEXT_NODE || !/\S/.test(node.data)) continue;
-        const range = document.createRange();
-        range.selectNodeContents(node);
-        for (const rect of range.getClientRects()) {
-          include(rect.left + scrollX, rect.top + scrollY, rect.right + scrollX, rect.bottom + scrollY);
-        }
       }
     }
 
@@ -209,6 +195,18 @@ func renderWithInspection(ctx context.Context, executable, htmlPath string, insp
       const pseudoStyle = getComputedStyle(element, pseudo);
       if (hasTimeVariation(pseudoStyle)) valid = false;
       if (visible(pseudoStyle) && hasInkOverflow(pseudoStyle)) valid = false;
+    }
+  }
+
+  const textNodes = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  for (let node = textNodes.nextNode(); node !== null; node = textNodes.nextNode()) {
+    if (!/\S/.test(node.data)) continue;
+    const range = document.createRange();
+    range.selectNodeContents(node);
+    const textStyle = getComputedStyle(node.parentElement);
+    if (textStyle.visibility === 'hidden' || textStyle.visibility === 'collapse') continue;
+    for (const rect of range.getClientRects()) {
+      include(rect.left + scrollX, rect.top + scrollY, rect.right + scrollX, rect.bottom + scrollY);
     }
   }
   return {width: maxRight, height: maxBottom, valid: valid && minLeft >= 0 && minTop >= 0};
