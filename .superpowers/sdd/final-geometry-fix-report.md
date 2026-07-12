@@ -305,3 +305,58 @@ PASS; only line-ending conversion warnings were emitted
 - Print media, network blocking, no-proxy startup, disabled JavaScript, A5 output, inclusive scale bounds, and exact one-page validation are unchanged.
 - The approved receipt remains accepted without fixture disclosure.
 - The immediate parent computed visibility check is necessary because Chromium exposes hidden text layout rectangles; it honors descendant visibility overrides but is not a claim that Range rectangles alone represent paint visibility.
+
+## Declarative Shadow DOM Follow-up
+
+Code/test commit: `b3e7c83` (`Block declarative shadow roots`).
+
+### TDD Evidence
+
+RED commands:
+
+```text
+go test ./internal/document -count=1 -run TestPrepareRemovesDeclarativeShadowRootAttributes -v
+go test ./internal/browser -count=1 -run "TestRender(RejectsRawOpenDeclarativeShadowRoot|PreparedDeclarativeShadowTemplatesRemainInert)$" -v
+```
+
+Before implementation, serialization/reparse retained open, closed, delegates-focus, clonable, serializable, future-option, and ordinary-element `shadowroot*` attributes. Raw open declarative shadow content rendered without rejection, and prepared open markup activated an accessible shadow root.
+
+GREEN evidence:
+
+```text
+go test ./internal/document -count=1
+PASS
+
+go test ./internal/browser -count=1
+PASS
+
+go test ./cmd/mail2receipt -count=1 -run TestReceiptEndToEnd -v -timeout 90s
+PASS; reported scale 0.77
+
+go test -race ./internal/document ./internal/browser -count=1 -timeout 180s
+PASS
+
+go test ./... -count=1 -timeout 120s
+PASS for all packages
+
+go vet ./...
+PASS (no output)
+
+git diff --check
+PASS; only line-ending conversion warnings were emitted
+```
+
+### Exact Shadow DOM Policy
+
+- During `document.Prepare`, normalize every parsed attribute name case-insensitively and remove every attribute whose normalized name begins `shadowroot` from templates and all other elements.
+- Preserve ordinary `<template>` elements and their child markup. With activation attributes removed before serialization, open and closed declarative template content remains inert on browser navigation.
+- `Prepare` is the primary and required security boundary for closed declarative shadow roots because closed roots are intentionally inaccessible through `element.shadowRoot` after activation.
+- During renderer inspection, reject any document element with a non-null accessible `element.shadowRoot` using the generic cannot-fit error. This is defense-in-depth for raw/unprepared open roots.
+- Do not pierce closed or user-agent shadow trees through CDP. Such inspection cannot reliably distinguish hostile closed roots from allowed browser internals, including ordinary images.
+
+### Self-review And Residual Concern
+
+- Serialization/reparse tests prove all tested current and future-prefix activation/options are absent while template content remains present.
+- Real-browser tests prove raw open roots fail closed and prepared open/closed templates stay inert without affecting geometry.
+- Network blocking, no-proxy startup, disabled JavaScript, print-media inspection, conservative geometry/paint/timing controls, A5 output, inclusive scale limits, and exact one-page validation are unchanged.
+- Closed roots introduced outside `Prepare` cannot be discovered through standard page APIs. The supported conversion path always uses `Prepare`; renderer open-root detection is not a substitute for that boundary.
