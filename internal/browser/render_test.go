@@ -175,6 +175,41 @@ func TestRenderRejectsAdditionalPaintOverflow(t *testing.T) {
 	}
 }
 
+func TestRenderRejectsTimeVaryingCSS(t *testing.T) {
+	executable := testBrowser(t)
+	tests := []struct {
+		name string
+		css  string
+	}{
+		{"moving transform animation", `@keyframes move{to{transform:translateX(600px)}}#target{animation:move 10s infinite}`},
+		{"delayed animation", `@keyframes move{to{transform:translateX(600px)}}#target{animation:move 1s 30s}`},
+		{"paused animation", `@keyframes move{to{transform:translateX(600px)}}#target{animation:move 1s infinite paused}`},
+		{"print transition duration", `@media print{#target{transition:transform 1s}}`},
+		{"print transition delay", `@media print{#target{transition-property:transform;transition-duration:0s;transition-delay:1s}}`},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			body := fmt.Sprintf(`<style>%s</style><div id="target">timed</div>`, test.css)
+			_, err := Render(context.Background(), executable, writeHTML(t, body))
+			if err == nil || err.Error() != "content cannot fit one A5 page" {
+				t.Fatalf("Render() error = %v, want content cannot fit one A5 page", err)
+			}
+		})
+	}
+}
+
+func TestRenderAcceptsStaticTimingCSS(t *testing.T) {
+	executable := testBrowser(t)
+	body := `<style>#target{animation:none;transition-property:transform,opacity;transition-duration:0s,0ms;transition-delay:0ms,0s}</style><div id="target">static</div>`
+	result, err := Render(context.Background(), executable, writeHTML(t, body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Scale != maxScale {
+		t.Fatalf("Render() scale = %v, want %v", result.Scale, maxScale)
+	}
+}
+
 func TestRenderRejectsUnmeasuredInkOverflow(t *testing.T) {
 	executable := testBrowser(t)
 	tests := []struct {

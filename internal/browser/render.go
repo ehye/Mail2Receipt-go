@@ -133,9 +133,44 @@ func renderWithInspection(ctx context.Context, executable, htmlPath string, insp
   ]);
   const opaqueNamespace = element => element.namespaceURI === 'http://www.w3.org/2000/svg' ||
     element.namespaceURI === 'http://www.w3.org/1998/Math/MathML';
+  const commaList = value => {
+    if (typeof value !== 'string') return null;
+    const parts = value.split(',').map(part => part.trim());
+    return parts.length > 0 && parts.every(Boolean) ? parts : null;
+  };
+  const timeList = value => {
+    const parts = commaList(value);
+    if (parts === null) return null;
+    let nonzero = false;
+    for (const part of parts) {
+      const match = part.match(/^([+-]?(?:\d+(?:\.\d*)?|\.\d+))(ms|s)$/i);
+      if (match === null) return null;
+      const amount = Number(match[1]);
+      if (!Number.isFinite(amount)) return null;
+      if (amount !== 0) nonzero = true;
+    }
+    return nonzero;
+  };
+  const activeNames = value => {
+    const names = commaList(value);
+    return names === null || names.some(name => name.toLowerCase() !== 'none');
+  };
+  const unsafeTransition = (propertyValue, durationValue, delayValue) => {
+    const properties = commaList(propertyValue);
+    const duration = timeList(durationValue);
+    const delay = timeList(delayValue);
+    if (properties === null || duration === null || delay === null) return true;
+    return properties.some(property => property.toLowerCase() !== 'none') && (duration || delay);
+  };
+  const hasTimeVariation = style => activeNames(style.animationName) ||
+    (typeof style.webkitAnimationName === 'string' && activeNames(style.webkitAnimationName)) ||
+    unsafeTransition(style.transitionProperty, style.transitionDuration, style.transitionDelay) ||
+    (typeof style.webkitTransitionProperty === 'string' &&
+      unsafeTransition(style.webkitTransitionProperty, style.webkitTransitionDuration, style.webkitTransitionDelay));
 
   for (const element of document.querySelectorAll('*')) {
     const style = getComputedStyle(element);
+    if (hasTimeVariation(style)) valid = false;
     if (visible(style)) {
       if (style.display === 'list-item' || opaqueNamespace(element) ||
           opaqueTags.has(element.localName) || hasInkOverflow(style)) valid = false;
@@ -148,6 +183,7 @@ func renderWithInspection(ctx context.Context, executable, htmlPath string, insp
 
     for (const pseudo of ['::before', '::after']) {
       const pseudoStyle = getComputedStyle(element, pseudo);
+      if (hasTimeVariation(pseudoStyle)) valid = false;
       if (!visible(pseudoStyle) || pseudoStyle.content === 'none' || pseudoStyle.content === 'normal') continue;
 
       // CSSOM does not expose pseudo-element client rectangles. Reject generated
@@ -157,6 +193,7 @@ func renderWithInspection(ctx context.Context, executable, htmlPath string, insp
 
     for (const pseudo of ['::marker', '::first-letter', '::first-line']) {
       const pseudoStyle = getComputedStyle(element, pseudo);
+      if (hasTimeVariation(pseudoStyle)) valid = false;
       if (visible(pseudoStyle) && hasInkOverflow(pseudoStyle)) valid = false;
     }
   }
