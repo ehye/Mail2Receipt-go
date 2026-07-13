@@ -89,6 +89,90 @@ func TestExistingOutputRequiresForce(t *testing.T) {
 	}
 }
 
+func TestBaseWritesRawDecodedHTMLAndBypassesPDFPipeline(t *testing.T) {
+	dir := t.TempDir()
+	input := filepath.Join(dir, "receipt.eml")
+	writeInput(t, input)
+	rawHTML := []byte("<html><body><img src=\"https://example.invalid/private.png\"></body></html>")
+	app := successRunner()
+	app.extract = func(io.Reader, int64) (message.Document, error) {
+		return message.Document{HTML: rawHTML}, nil
+	}
+	app.prepare = func(message.Document) ([]byte, error) {
+		t.Fatal("prepare called in base mode")
+		return nil, nil
+	}
+	app.findBrowser = func(func(string) string, func(string) bool) (string, error) {
+		t.Fatal("findBrowser called in base mode")
+		return "", nil
+	}
+	app.render = func(context.Context, string, string) (browser.Result, error) {
+		t.Fatal("render called in base mode")
+		return browser.Result{}, nil
+	}
+	app.verify = func([]byte) error {
+		t.Fatal("verify called in base mode")
+		return nil
+	}
+	var stdout bytes.Buffer
+
+	if code := app.run(context.Background(), []string{"--base", "--verbose", input}, &stdout, io.Discard); code != 0 {
+		t.Fatalf("exit = %d", code)
+	}
+	if stdout.Len() != 0 {
+		t.Fatalf("stdout = %q", stdout.String())
+	}
+	got, err := os.ReadFile(filepath.Join(dir, "output.html"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, rawHTML) {
+		t.Fatalf("output = %q", got)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "output.pdf")); !os.IsNotExist(err) {
+		t.Fatalf("PDF output exists: %v", err)
+	}
+}
+
+func TestBaseExplicitOutput(t *testing.T) {
+	dir := t.TempDir()
+	input := filepath.Join(dir, "receipt.eml")
+	output := filepath.Join(dir, "decoded.custom")
+	writeInput(t, input)
+	app := successRunner()
+
+	if code := app.run(context.Background(), []string{"--base", input, output}, io.Discard, io.Discard); code != 0 {
+		t.Fatalf("exit = %d", code)
+	}
+	if got, err := os.ReadFile(output); err != nil || string(got) != "<html><head></head><body>ok</body></html>" {
+		t.Fatalf("output = %q, %v", got, err)
+	}
+}
+
+func TestBaseExistingOutputRequiresForce(t *testing.T) {
+	dir := t.TempDir()
+	input := filepath.Join(dir, "receipt.eml")
+	output := filepath.Join(dir, "output.html")
+	writeInput(t, input)
+	if err := os.WriteFile(output, []byte("old"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	app := successRunner()
+
+	if code := app.run(context.Background(), []string{"--base", input}, io.Discard, io.Discard); code == 0 {
+		t.Fatal("exit = 0 without --force")
+	}
+	if got, err := os.ReadFile(output); err != nil || string(got) != "old" {
+		t.Fatalf("output = %q, %v", got, err)
+	}
+	if code := app.run(context.Background(), []string{"--base", "--force", input}, io.Discard, io.Discard); code != 0 {
+		t.Fatalf("force exit = %d", code)
+	}
+	if got, err := os.ReadFile(output); err != nil || string(got) != "<html><head></head><body>ok</body></html>" {
+		t.Fatalf("output = %q, %v", got, err)
+	}
+}
+
 func TestVerboseReportsScale(t *testing.T) {
 	dir := t.TempDir()
 	input := filepath.Join(dir, "receipt.eml")

@@ -40,6 +40,7 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 func (app runner) run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	flags := flag.NewFlagSet("mail2receipt", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
+	base := flags.Bool("base", false, "write decoded HTML without rendering a PDF")
 	force := flags.Bool("force", false, "replace an existing output")
 	verbose := flags.Bool("verbose", false, "report rendering details")
 	if err := flags.Parse(args); err != nil {
@@ -47,13 +48,17 @@ func (app runner) run(ctx context.Context, args []string, stdout, stderr io.Writ
 	}
 	positional := flags.Args()
 	if len(positional) < 1 || len(positional) > 2 {
-		return fail(stderr, "usage: mail2receipt [--force] [--verbose] input.eml [output.pdf]")
+		return fail(stderr, "usage: mail2receipt [--base] [--force] [--verbose] input.eml [output]")
 	}
 	input := positional[0]
 	if !strings.EqualFold(filepath.Ext(input), ".eml") {
 		return fail(stderr, "input must be an .eml file")
 	}
-	output := filepath.Join(filepath.Dir(input), "output.pdf")
+	outputName := "output.pdf"
+	if *base {
+		outputName = "output.html"
+	}
+	output := filepath.Join(filepath.Dir(input), outputName)
 	if len(positional) == 2 {
 		output = positional[1]
 	}
@@ -72,16 +77,23 @@ func (app runner) run(ctx context.Context, args []string, stdout, stderr io.Writ
 		return fail(stderr, "could not inspect output")
 	}
 
+	doc, err := app.extract(in, maxMessageBytes)
+	if err != nil {
+		return fail(stderr, "could not read email message")
+	}
+	if *base {
+		if err := publish(output, doc.HTML, *force); err != nil {
+			return fail(stderr, "could not write output")
+		}
+		return 0
+	}
+
 	workspace, err := os.MkdirTemp("", "mail2receipt-")
 	if err != nil {
 		return fail(stderr, "could not create private workspace")
 	}
 	defer os.RemoveAll(workspace)
 
-	doc, err := app.extract(in, maxMessageBytes)
-	if err != nil {
-		return fail(stderr, "could not read email message")
-	}
 	html, err := app.prepare(doc)
 	if err != nil {
 		return fail(stderr, "could not prepare receipt")
@@ -111,7 +123,7 @@ func (app runner) run(ctx context.Context, args []string, stdout, stderr io.Writ
 }
 
 func publish(destination string, data []byte, force bool) error {
-	temporary, err := os.CreateTemp(filepath.Dir(destination), ".mail2receipt-*.pdf")
+	temporary, err := os.CreateTemp(filepath.Dir(destination), ".mail2receipt-*")
 	if err != nil {
 		return err
 	}
