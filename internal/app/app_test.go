@@ -173,6 +173,66 @@ func TestBaseExistingOutputRequiresForce(t *testing.T) {
 	}
 }
 
+func TestBaseExtractionFailureLeavesNoOutputAndDoesNotLeakError(t *testing.T) {
+	dir := t.TempDir()
+	input := filepath.Join(dir, "receipt.eml")
+	output := filepath.Join(dir, "output.html")
+	writeInput(t, input)
+	app := successRunner()
+	app.extract = func(io.Reader, int64) (message.Document, error) {
+		return message.Document{}, errors.New("decoded account 123")
+	}
+	var stderr bytes.Buffer
+
+	if code := app.run(context.Background(), []string{"--base", input}, io.Discard, &stderr); code == 0 {
+		t.Fatal("exit = 0")
+	}
+	if _, err := os.Stat(output); !os.IsNotExist(err) {
+		t.Fatalf("destination exists: %v", err)
+	}
+	if strings.Contains(stderr.String(), "account") || strings.Contains(stderr.String(), "123") {
+		t.Fatalf("sensitive error leaked: %q", stderr.String())
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].Name() != filepath.Base(input) {
+		t.Fatalf("unexpected files: %v", entries)
+	}
+}
+
+func TestBasePublicationFailureCleansTemporaryFileAndPreservesDestination(t *testing.T) {
+	dir := t.TempDir()
+	input := filepath.Join(dir, "receipt.eml")
+	output := filepath.Join(dir, "output.html")
+	sentinel := filepath.Join(output, "sentinel")
+	writeInput(t, input)
+	if err := os.Mkdir(output, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(sentinel, []byte("old"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	app := successRunner()
+
+	if code := app.run(context.Background(), []string{"--base", "--force", input, output}, io.Discard, io.Discard); code == 0 {
+		t.Fatal("exit = 0")
+	}
+	if got, err := os.ReadFile(sentinel); err != nil || string(got) != "old" {
+		t.Fatalf("sentinel = %q, %v", got, err)
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), ".mail2receipt-") {
+			t.Fatalf("temporary artifact remains: %s", entry.Name())
+		}
+	}
+}
+
 func TestVerboseReportsScale(t *testing.T) {
 	dir := t.TempDir()
 	input := filepath.Join(dir, "receipt.eml")
