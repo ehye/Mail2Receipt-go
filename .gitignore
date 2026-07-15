@@ -1,6 +1,5 @@
 # Go build and test outputs
-/mail2receipt
-/mail2receipt.exe
+dist/
 *.test
 *.out
 coverage.*
@@ -13,3 +12,7 @@ coverage.*
 # Operating system files
 .DS_Store
 Thumbs.db
+
+
+*.eml
+*.pdf
