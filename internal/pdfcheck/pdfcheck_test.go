@@ -31,9 +31,16 @@ func TestVerifyRejectsZeroPages(t *testing.T) {
 	assertVerifyErrorContains(t, makePDF(t, nil), "page count")
 }
 
-func TestVerifyRejectsMultiplePages(t *testing.T) {
+func TestVerifyAcceptsMultipleA5PortraitPages(t *testing.T) {
 	boxes := [][4]float64{{0, 0, 419.528, 595.276}, {0, 0, 419.528, 595.276}}
-	assertVerifyErrorContains(t, makePDF(t, boxes), "page count")
+	if err := Verify(makePDF(t, boxes)); err != nil {
+		t.Fatalf("Verify() error = %v", err)
+	}
+}
+
+func TestVerifyRejectsWrongMediaBoxOnLaterPage(t *testing.T) {
+	boxes := [][4]float64{{0, 0, 419.528, 595.276}, {0, 0, 612, 792}}
+	assertVerifyErrorContains(t, makePDF(t, boxes), "paper dimensions")
 }
 
 func TestVerifyRejectsWrongMediaBox(t *testing.T) {

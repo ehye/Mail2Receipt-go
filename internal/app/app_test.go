@@ -89,18 +89,20 @@ func TestExistingOutputRequiresForce(t *testing.T) {
 	}
 }
 
-func TestBaseWritesRawDecodedHTMLAndBypassesPDFPipeline(t *testing.T) {
+func TestBaseWritesPreparedHTMLAndBypassesPDFPipeline(t *testing.T) {
 	dir := t.TempDir()
 	input := filepath.Join(dir, "receipt.eml")
 	writeInput(t, input)
 	rawHTML := []byte("<html><body><img src=\"https://example.invalid/private.png\"></body></html>")
+	preparedHTML := []byte("<html><body>prepared</body></html>")
 	app := successRunner()
 	app.extract = func(io.Reader, int64) (message.Document, error) {
 		return message.Document{HTML: rawHTML}, nil
 	}
-	app.prepare = func(message.Document) ([]byte, error) {
-		t.Fatal("prepare called in base mode")
-		return nil, nil
+	var preparedDoc message.Document
+	app.prepare = func(doc message.Document) ([]byte, error) {
+		preparedDoc = doc
+		return preparedHTML, nil
 	}
 	app.findBrowser = func(func(string) string, func(string) bool) (string, error) {
 		t.Fatal("findBrowser called in base mode")
@@ -126,11 +128,37 @@ func TestBaseWritesRawDecodedHTMLAndBypassesPDFPipeline(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !bytes.Equal(got, rawHTML) {
+	if !bytes.Equal(preparedDoc.HTML, rawHTML) {
+		t.Fatalf("prepared document = %q", preparedDoc.HTML)
+	}
+	if !bytes.Equal(got, preparedHTML) {
 		t.Fatalf("output = %q", got)
 	}
 	if _, err := os.Stat(filepath.Join(dir, "output.pdf")); !os.IsNotExist(err) {
 		t.Fatalf("PDF output exists: %v", err)
+	}
+}
+
+func TestPDFRendersPreparedHTML(t *testing.T) {
+	dir := t.TempDir()
+	input := filepath.Join(dir, "receipt.eml")
+	writeInput(t, input)
+	preparedHTML := []byte("<html><body>prepared for PDF</body></html>")
+	app := successRunner()
+	app.prepare = func(message.Document) ([]byte, error) { return preparedHTML, nil }
+	app.render = func(_ context.Context, _, path string) (browser.Result, error) {
+		got, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Equal(got, preparedHTML) {
+			t.Fatalf("render input = %q", got)
+		}
+		return browser.Result{PDF: []byte("pdf"), Scale: 1.0}, nil
+	}
+
+	if code := app.run(context.Background(), []string{input}, io.Discard, io.Discard); code != 0 {
+		t.Fatalf("exit = %d", code)
 	}
 }
 
@@ -144,7 +172,7 @@ func TestBaseExplicitOutput(t *testing.T) {
 	if code := app.run(context.Background(), []string{"--base", input, output}, io.Discard, io.Discard); code != 0 {
 		t.Fatalf("exit = %d", code)
 	}
-	if got, err := os.ReadFile(output); err != nil || string(got) != "<html><head></head><body>ok</body></html>" {
+	if got, err := os.ReadFile(output); err != nil || string(got) != "prepared" {
 		t.Fatalf("output = %q, %v", got, err)
 	}
 }
@@ -168,7 +196,7 @@ func TestBaseExistingOutputRequiresForce(t *testing.T) {
 	if code := app.run(context.Background(), []string{"--base", "--force", input}, io.Discard, io.Discard); code != 0 {
 		t.Fatalf("force exit = %d", code)
 	}
-	if got, err := os.ReadFile(output); err != nil || string(got) != "<html><head></head><body>ok</body></html>" {
+	if got, err := os.ReadFile(output); err != nil || string(got) != "prepared" {
 		t.Fatalf("output = %q, %v", got, err)
 	}
 }

@@ -87,12 +87,18 @@ func TestRenderPreparedDeclarativeShadowTemplatesRemainInert(t *testing.T) {
 	}
 }
 
-func TestRenderRejectsContentThatExceedsFixedScale(t *testing.T) {
+func TestRenderPrintsLongContentAcrossMultipleA5Pages(t *testing.T) {
 	executable := testBrowser(t)
-	height := math.Ceil(printableHeight/0.83) + 1
-	_, err := Render(context.Background(), executable, writeHTML(t, fmt.Sprintf(`<div style="height:%vpx;width:400px">too long</div>`, height)))
-	if err == nil || err.Error() != "content cannot fit one A5 page" {
-		t.Fatalf("Render() error = %v, want content cannot fit one A5 page", err)
+	height := math.Ceil(3 * printableHeight / 0.83)
+	result, err := Render(context.Background(), executable, writeHTML(t, fmt.Sprintf(`<div style="height:%vpx;width:400px">long receipt</div>`, height)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Scale != 0.83 {
+		t.Fatalf("Render() scale = %v, want 0.83", result.Scale)
+	}
+	if pages := len(pdfPagePattern.FindAll(result.PDF, -1)); pages < 2 {
+		t.Fatalf("PDF pages = %d, want at least 2", pages)
 	}
 }
 
@@ -426,8 +432,8 @@ Array.from(document.querySelectorAll('#lockup, #logo')).map(image => {
 	}
 }
 
-func TestScaleToFitAcceptsExactFixedScaleBoundary(t *testing.T) {
-	scale, err := scaleToFit(printableWidth/0.83, printableHeight/0.83)
+func TestScaleToFitAcceptsTallContentAtFixedScale(t *testing.T) {
+	scale, err := scaleToFit(printableWidth/0.83, math.Nextafter(printableHeight/0.83, math.Inf(1)))
 	if err != nil {
 		t.Fatalf("scaleToFit() error = %v", err)
 	}
@@ -435,9 +441,9 @@ func TestScaleToFitAcceptsExactFixedScaleBoundary(t *testing.T) {
 		t.Fatalf("scaleToFit() = %v, want exactly 0.83", scale)
 	}
 
-	_, err = scaleToFit(printableWidth/0.83, math.Nextafter(printableHeight/0.83, math.Inf(1)))
+	_, err = scaleToFit(printableWidth/0.83+1, printableHeight/0.83)
 	if err == nil || err.Error() != "content cannot fit one A5 page" {
-		t.Fatalf("scaleToFit() above boundary error = %v, want content cannot fit one A5 page", err)
+		t.Fatalf("scaleToFit() wide-content error = %v, want content cannot fit one A5 page", err)
 	}
 }
 

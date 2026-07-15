@@ -25,13 +25,13 @@ const (
 
 var pdfPagePattern = regexp.MustCompile(`/Type\s*/Page(?:\s|[/<])`)
 
-// Result is a rendered one-page PDF and the scale used to produce it.
+// Result is a rendered PDF and the scale used to produce it.
 type Result struct {
 	PDF   []byte
 	Scale float64
 }
 
-// Render loads prepared HTML in an isolated installed browser and prints one A5 page.
+// Render loads prepared HTML in an isolated installed browser and prints A5 pages.
 func Render(ctx context.Context, executable, htmlPath string) (Result, error) {
 	return renderWithInspection(ctx, executable, htmlPath, nil)
 }
@@ -250,15 +250,15 @@ func renderWithInspection(ctx context.Context, executable, htmlPath string, insp
 	})); err != nil {
 		return Result{}, errors.New("browser could not print receipt")
 	}
-	if !bytes.HasPrefix(pdf, []byte("%PDF-")) || len(pdfPagePattern.FindAll(pdf, -1)) != 1 {
-		return Result{}, errors.New("browser did not produce exactly one PDF page")
+	if !bytes.HasPrefix(pdf, []byte("%PDF-")) || len(pdfPagePattern.FindAll(pdf, -1)) == 0 {
+		return Result{}, errors.New("browser did not produce PDF pages")
 	}
 	return Result{PDF: pdf, Scale: scale}, nil
 }
 
 func scaleToFit(width, height float64) (float64, error) {
 	if math.IsNaN(width) || math.IsNaN(height) || math.IsInf(width, 0) || math.IsInf(height, 0) ||
-		width < 0 || height < 0 || fixedScale > printableWidth/width || fixedScale > printableHeight/height {
+		width < 0 || height < 0 || fixedScale > printableWidth/width {
 		return 0, errors.New("content cannot fit one A5 page")
 	}
 	return fixedScale, nil

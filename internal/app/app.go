@@ -40,7 +40,7 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 func (app runner) run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	flags := flag.NewFlagSet("mail2receipt", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
-	base := flags.Bool("base", false, "write decoded HTML without rendering a PDF")
+	base := flags.Bool("base", false, "write prepared HTML without rendering a PDF")
 	force := flags.Bool("force", false, "replace an existing output")
 	verbose := flags.Bool("verbose", false, "report rendering details")
 	if err := flags.Parse(args); err != nil {
@@ -81,8 +81,12 @@ func (app runner) run(ctx context.Context, args []string, stdout, stderr io.Writ
 	if err != nil {
 		return fail(stderr, "could not read email message")
 	}
+	html, err := app.prepare(doc)
+	if err != nil {
+		return fail(stderr, "could not prepare receipt")
+	}
 	if *base {
-		if err := publish(output, doc.HTML, *force); err != nil {
+		if err := publish(output, html, *force); err != nil {
 			return fail(stderr, "could not write output")
 		}
 		return 0
@@ -94,10 +98,6 @@ func (app runner) run(ctx context.Context, args []string, stdout, stderr io.Writ
 	}
 	defer os.RemoveAll(workspace)
 
-	html, err := app.prepare(doc)
-	if err != nil {
-		return fail(stderr, "could not prepare receipt")
-	}
 	htmlPath := filepath.Join(workspace, "receipt.html")
 	if err := os.WriteFile(htmlPath, html, 0o600); err != nil {
 		return fail(stderr, "could not prepare private workspace")

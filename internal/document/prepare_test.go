@@ -243,7 +243,7 @@ func TestPrepareEmbedsKnownLogosAndRemovesRemoteImages(t *testing.T) {
 	}
 }
 
-func TestPrepareRemovesExactDecorativeImageElementsAndComments(t *testing.T) {
+func TestPreparePreservesLegacyEmailElementsAndComments(t *testing.T) {
 	const input = `<html><head><style>.keep{background:url(email_top.png.bak)}</style></head><body>
 <!-- decorative https://assets.example/EMAIL_TOP.PNG?version=1 -->
 <!-- keep email_top.png.bak -->
@@ -259,19 +259,132 @@ func TestPrepareRemovesExactDecorativeImageElementsAndComments(t *testing.T) {
 		t.Fatal(err)
 	}
 	text := string(got)
-	for _, unwanted := range []string{`id="top"`, `id="mid"`, `id="bottom"`, "remove top", "remove bottom", "decorative https://assets.example/EMAIL_TOP.PNG"} {
-		if strings.Contains(text, unwanted) {
-			t.Errorf("prepared HTML retained decorative content %q", unwanted)
-		}
-	}
-	for _, want := range []string{`id="mid-wrapper"`, "keep narrow wrapper", `id="similar"`, "keep similar", "email_top.png.bak", `id="navigation"`, "keep navigation"} {
+	for _, want := range []string{`id="top"`, `id="mid"`, `id="bottom"`, "remove top", "remove bottom", "decorative https://assets.example/EMAIL_TOP.PNG", `id="mid-wrapper"`, "keep narrow wrapper", `id="similar"`, "keep similar", "email_top.png.bak", `id="navigation"`, "keep navigation"} {
 		if !strings.Contains(text, want) {
-			t.Errorf("prepared HTML removed unrelated content %q", want)
+			t.Errorf("prepared HTML removed preserved content %q", want)
 		}
 	}
 }
 
-func TestPrepareRemovesStyleElementsReferencingDecorativeImages(t *testing.T) {
+func TestPrepareRemovesLegacyEmailCSSDeclarationsOnly(t *testing.T) {
+	const input = `<html><head><style>
+.top { background:url("https://legacy-top.example/email_top.png?version=1"); color: green }
+.mid { mask-image:cross-fade(url(../EMAIL_MID.PNG#x), black); color: blue }
+</style></head><body>
+<!-- keep legacy email_top.png comment -->
+<div id="inline" style="background:url('https://legacy-bottom.example/email_bottom.png'); width:100%"><span>keep inline child</span></div>
+<div id="image"><img src="https://legacy-image.example/email_top.png"><span>keep image container</span></div>
+</body></html>`
+
+	got, err := Prepare(message.Document{HTML: []byte(input)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(got)
+	for _, unwanted := range []string{"legacy-top.example", "EMAIL_MID.PNG", "legacy-bottom.example"} {
+		if strings.Contains(text, unwanted) {
+			t.Errorf("prepared HTML retained legacy CSS URL %q", unwanted)
+		}
+	}
+	for _, want := range []string{`id="inline"`, "keep inline child", `width:100%`, `id="image"`, "keep image container", "keep legacy email_top.png comment", "color: green", "color: blue"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("prepared HTML removed preserved content %q", want)
+		}
+	}
+}
+
+func TestPreparePreservesAllEDEDEDDeclarations(t *testing.T) {
+	const input = `<html><head><style>.x{border:1px solid #EDEDED;border-inline-start-color:#ededed;color:#ededed;background:#ededed;outline-color:#ededed;fill:#ededed}</style></head><body style="border-top-color:#EDEDED;background-color:#ededed;color:#EDEDED"></body></html>`
+
+	got, err := Prepare(message.Document{HTML: []byte(input)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	lower := strings.ToLower(string(got))
+	for _, want := range []string{"border:1px solid #ededed", "border-inline-start-color:#ededed", "border-top-color:#ededed", "color:#ededed", "background:#ededed", "background-color:#ededed", "outline-color:#ededed", "fill:#ededed"} {
+		if !strings.Contains(lower, want) {
+			t.Errorf("prepared HTML removed declaration %q", want)
+		}
+	}
+}
+
+func TestPreparePreservesEDEDEDFallbackWhenRemovingRemoteCSSURL(t *testing.T) {
+	const input = `<html><head></head><body><div style="background:#EDEDED url(https://assets.example/tile.png); color:navy">receipt</div></body></html>`
+
+	got, err := Prepare(message.Document{HTML: []byte(input)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := strings.ToLower(string(got))
+	if strings.Contains(text, "assets.example") {
+		t.Fatal("prepared HTML retained remote CSS URL")
+	}
+	if !strings.Contains(text, "background:#ededed") {
+		t.Fatalf("prepared HTML removed EDEDED fallback: %s", got)
+	}
+}
+
+func TestPreparePreservesEDEDEDFallbackWhenRemovingNestedCSSResources(t *testing.T) {
+	const input = `<html><head></head><body>
+<div id="image-set" style="background:#EDEDED image-set(url(https://assets.example/tile.png) 1x)">image set</div>
+<div id="source-data" style="background:#EDEDED url(data:image/png;base64,AQID)">source data</div>
+</body></html>`
+
+	got, err := Prepare(message.Document{HTML: []byte(input)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := strings.ToLower(string(got))
+	for _, unwanted := range []string{"assets.example", "image-set(", "data:image/png;base64"} {
+		if strings.Contains(text, unwanted) {
+			t.Errorf("prepared HTML retained removed CSS resource %q", unwanted)
+		}
+	}
+	if count := strings.Count(text, "background:#ededed"); count != 2 {
+		t.Fatalf("EDEDED fallbacks = %d, want 2: %s", count, got)
+	}
+}
+
+func TestContainsLegacyEmailCSSURLMatchesExactBasenames(t *testing.T) {
+	tests := []struct {
+		value string
+		want  bool
+	}{
+		{`background:url(https://assets.example/email_top.png?version=1)`, true},
+		{`background:url(../EMAIL_MID.PNG#footer)`, true},
+		{`background:url(email_bottom.png)`, true},
+		{`background:url(email_top.png=variant)`, false},
+		{`background:url(email_mid.png.bak)`, false},
+		{`background:url(prefixemail_bottom.png)`, false},
+	}
+	for _, tt := range tests {
+		if got := containsLegacyEmailCSSURL(tt.value); got != tt.want {
+			t.Errorf("containsLegacyEmailCSSURL(%q) = %v, want %v", tt.value, got, tt.want)
+		}
+	}
+}
+
+func TestEDEDEDFallbackDeclarationRecognizesCSSColorAndPriorityTokens(t *testing.T) {
+	tests := []struct {
+		name        string
+		declaration string
+		want        string
+		ok          bool
+	}{
+		{"URL fragment is not a color", `background:url(https://assets.example/tile.png#ededed)`, "", false},
+		{"identifier suffix is not a color", `background:#ededed-name url(https://assets.example/tile.png)`, "", false},
+		{"URL text is not important", `background:#EDEDED url(https://assets.example/!important.png)`, `background:#EDEDED`, true},
+		{"spaced important is preserved", `background:#ededed url(https://assets.example/tile.png) ! important`, `background:#ededed !important`, true},
+	}
+	for _, tt := range tests {
+		got, ok := edededFallbackDeclaration(tt.declaration)
+		if got != tt.want || ok != tt.ok {
+			t.Errorf("edededFallbackDeclaration(%q) = %q, %v; want %q, %v", tt.declaration, got, ok, tt.want, tt.ok)
+		}
+	}
+}
+
+func TestPreparePreservesStyleElementsAfterRemovingLegacyCSSDeclarations(t *testing.T) {
 	const input = `<html><head>
 <style id="top">.legacy{background:url("https://assets.example/EMAIL_TOP.PNG?version=1")}.lost{color:red}</style>
 <style id="mid">.legacy{background-image:image-set(url(../email_mid.png#x) 1x)}</style>
@@ -285,19 +398,19 @@ func TestPrepareRemovesStyleElementsReferencingDecorativeImages(t *testing.T) {
 		t.Fatal(err)
 	}
 	text := string(got)
-	for _, unwanted := range []string{`id="top"`, `id="mid"`, `id="bottom"`, ".lost"} {
+	for _, unwanted := range []string{"assets.example/EMAIL_TOP.PNG", "../email_mid.png", "url(email_bottom.png)"} {
 		if strings.Contains(text, unwanted) {
-			t.Errorf("prepared HTML retained decorative style element content %q", unwanted)
+			t.Errorf("prepared HTML retained legacy CSS declaration %q", unwanted)
 		}
 	}
-	for _, want := range []string{`id="similar"`, "color:green", `id="text"`, "url(email_mid.png)"} {
+	for _, want := range []string{`id="top"`, `id="mid"`, `id="bottom"`, ".lost", "color:red", `id="similar"`, "color:green", `id="text"`, "url(email_mid.png)"} {
 		if !strings.Contains(text, want) {
-			t.Errorf("prepared HTML removed unrelated style content %q", want)
+			t.Errorf("prepared HTML removed preserved style content %q", want)
 		}
 	}
 }
 
-func TestPrepareRemovesCommentsReferencingDecorativeURLBasenames(t *testing.T) {
+func TestPreparePreservesCommentsReferencingLegacyImageBasenames(t *testing.T) {
 	const input = `<html><head></head><body>
 <!-- background: url(email_top.png) -->
 <!-- background: URL("../EMAIL_MID.PNG?version=1") -->
@@ -312,19 +425,14 @@ func TestPrepareRemovesCommentsReferencingDecorativeURLBasenames(t *testing.T) {
 		t.Fatal(err)
 	}
 	text := string(got)
-	for _, unwanted := range []string{"background: url(email_top.png)", `URL("../EMAIL_MID.PNG`, "path/email_bottom.png#footer"} {
-		if strings.Contains(text, unwanted) {
-			t.Errorf("prepared HTML retained decorative comment %q", unwanted)
-		}
-	}
-	for _, want := range []string{"url(email_top.png.bak)", "prefixemail_mid.png", "email_bottom.png.extra"} {
+	for _, want := range []string{"background: url(email_top.png)", "EMAIL_MID.PNG?version=1", "path/email_bottom.png#footer", "url(email_top.png.bak)", "prefixemail_mid.png", "email_bottom.png.extra"} {
 		if !strings.Contains(text, want) {
-			t.Errorf("prepared HTML removed unrelated comment %q", want)
+			t.Errorf("prepared HTML removed comment %q", want)
 		}
 	}
 }
 
-func TestPrepareRemovesDecorativeReferencesOnlyFromImageBearingElements(t *testing.T) {
+func TestPreparePreservesImageBearingElementsWithLegacyReferences(t *testing.T) {
 	const input = `<html><head></head><body>
 <img id="src" src="email_top.png"><img id="srcset" srcset="email_mid.png 1x">
 <table><tr><td id="cell" background="email_bottom.png">remove cell</td></tr></table>
@@ -339,23 +447,23 @@ func TestPrepareRemovesDecorativeReferencesOnlyFromImageBearingElements(t *testi
 		t.Fatal(err)
 	}
 	text := string(got)
-	for _, unwanted := range []string{`id="src"`, `id="srcset"`, `id="cell"`, `id="video"`, `id="object"`, `id="svg-image"`, `id="style"`, "remove cell", "remove video", "remove object", "remove style"} {
-		if strings.Contains(text, unwanted) {
-			t.Errorf("prepared HTML retained decorative image-bearing element %q", unwanted)
+	for _, want := range []string{`id="src"`, `id="srcset"`, `id="cell"`, `id="video"`, `id="object"`, `id="svg-image"`, `id="style"`, "remove cell", "remove video", "remove object", "remove style"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("prepared HTML removed preserved element %q", want)
 		}
 	}
 }
 
-func TestPrepareRemovesBodyWithDecorativeBackground(t *testing.T) {
+func TestPreparePreservesBodyWithLegacyBackground(t *testing.T) {
 	const input = `<html><head></head><body id="body" background="email_top.png"><p>remove body content</p></body></html>`
 	got, err := Prepare(message.Document{HTML: []byte(input)})
 	if err != nil {
 		t.Fatal(err)
 	}
 	text := string(got)
-	for _, unwanted := range []string{`id="body"`, "remove body content"} {
-		if strings.Contains(text, unwanted) {
-			t.Errorf("prepared HTML retained decorative body content %q", unwanted)
+	for _, want := range []string{`id="body"`, "remove body content"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("prepared HTML removed body content %q", want)
 		}
 	}
 }
@@ -387,26 +495,7 @@ func TestPreparePreservesNonImageElementsWithDecorativeNamedAttributes(t *testin
 	}
 }
 
-func TestPreparePreservesEDEDEDBordersAndTextOnly(t *testing.T) {
-	const input = `<html><head><style>.x{border:1px solid #EDEDED;border-inline-start-color:#ededed;color:#ededed;background:#ededed;outline-color:#ededed;fill:#ededed}</style></head><body style="border-top-color:#EDEDED;background-color:#ededed;color:#EDEDED"></body></html>`
-	got, err := Prepare(message.Document{HTML: []byte(input)})
-	if err != nil {
-		t.Fatal(err)
-	}
-	lower := strings.ToLower(string(got))
-	for _, want := range []string{"border:1px solid #ededed", "border-inline-start-color:#ededed", "border-top-color:#ededed", "color:#ededed"} {
-		if !strings.Contains(lower, want) {
-			t.Errorf("prepared HTML removed approved declaration %q", want)
-		}
-	}
-	for _, unwanted := range []string{"background:#ededed", "background-color:#ededed", "outline-color:#ededed", "fill:#ededed"} {
-		if strings.Contains(lower, unwanted) {
-			t.Errorf("prepared HTML retained non-text declaration %q", unwanted)
-		}
-	}
-}
-
-func TestKeepDeclarationRecognizesOnlyActualEDEDEDBorderProperties(t *testing.T) {
+func TestKeepDeclarationPreservesEDEDEDForEveryProperty(t *testing.T) {
 	for _, property := range []string{
 		"border", "border-color",
 		"border-top", "border-right", "border-bottom", "border-left",
@@ -420,12 +509,9 @@ func TestKeepDeclarationRecognizesOnlyActualEDEDEDBorderProperties(t *testing.T)
 		}
 	}
 
-	for _, property := range []string{
-		"background", "outline-color", "border-topography", "border-inlinefoo", "border-blocked",
-		"border-top-colorized", "border-inline-started", "my-border", "border-image",
-	} {
-		if keepDeclaration(property, "#EDEDED") {
-			t.Errorf("keepDeclaration(%q) = true, want false", property)
+	for _, property := range []string{"background", "outline-color", "border-topography", "border-inlinefoo", "border-blocked", "border-top-colorized", "border-inline-started", "my-border", "border-image"} {
+		if !keepDeclaration(property, "#EDEDED") {
+			t.Errorf("keepDeclaration(%q) = false, want true", property)
 		}
 	}
 }

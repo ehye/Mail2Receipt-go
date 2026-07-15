@@ -25,15 +25,15 @@ The existing PDF command and its defaults remain unchanged.
 
 ## Output Semantics
 
-Base mode writes `message.Document.HTML` exactly as returned by the existing
-MIME extractor. The extractor selects the same eligible HTML MIME part used by
-PDF mode and applies MIME transfer decoding, including Base64 and
-quoted-printable decoding, plus supported charset conversion.
+Base mode writes the bytes returned by `document.Prepare` after the existing
+MIME extractor selects and transfer-decodes the eligible HTML part, including
+Base64, quoted-printable, and supported charset conversion. The prepared HTML
+is the same representation PDF mode writes into its private workspace before
+rendering.
 
-Base mode does not run document preparation. It therefore does not sanitize
-HTML, rewrite CID or remote references, replace logos, change typography, add
-print CSS, launch a browser, render a PDF, or verify a PDF. CID assets are not
-written separately or embedded into the HTML.
+Prepared base HTML applies the offline asset policy, approved logo and CID
+embedding, legacy email-image CSS cleanup, typography handling, and print CSS.
+It does not launch a browser, render a PDF, or verify a PDF.
 
 ## Application Flow
 
@@ -41,10 +41,10 @@ Argument parsing determines the output default from the selected mode. The
 application retains the existing input validation and destination overwrite
 check, then invokes the existing size-limited MIME extractor.
 
-After successful extraction, base mode atomically publishes the extracted HTML
-and returns. The private rendering workspace is created only for PDF mode, so
-base mode cannot invoke document preparation, browser discovery, rendering, or
-PDF verification.
+After successful extraction, the application prepares HTML once. Base mode
+atomically publishes the prepared HTML and returns. PDF mode writes those exact
+prepared bytes to its private rendering workspace before browser discovery,
+rendering, and PDF verification.
 
 The publication helper remains shared by both modes and uses a format-neutral
 temporary filename before atomically replacing the destination.
@@ -65,8 +65,10 @@ Application tests will verify:
 
 - the default `output.html` path beside the input;
 - explicit output paths;
-- byte-for-byte publication of the extractor's HTML result;
-- bypass of preparation, browser discovery, rendering, and PDF verification;
+- publication of the prepared HTML result;
+- preparation plus bypass of browser discovery, rendering, and PDF
+  verification;
+- exact prepared-HTML bytes handed to PDF rendering;
 - existing-output rejection and `--force` replacement;
 - accepted, silent `--verbose` behavior in base mode;
 - extraction or publication failure leaves no partial destination; and

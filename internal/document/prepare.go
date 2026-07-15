@@ -45,15 +45,7 @@ func prepareHTML(source []byte, assets map[string]message.Asset, srcdocDepth int
 	var head *html.Node
 	var walk func(*html.Node) error
 	walk = func(node *html.Node) error {
-		if node.Type == html.CommentNode && referencesDecorativeImage(node.Data) {
-			node.Parent.RemoveChild(node)
-			return nil
-		}
 		if node.Type == html.ElementNode {
-			if elementReferencesDecorativeImage(node) {
-				node.Parent.RemoveChild(node)
-				return nil
-			}
 			if node.Data == "base" {
 				node.Parent.RemoveChild(node)
 				return nil
@@ -297,73 +289,27 @@ func isASCIISpace(value byte) bool {
 	return value == ' ' || value == '\t' || value == '\n' || value == '\f' || value == '\r'
 }
 
-func elementReferencesDecorativeImage(node *html.Node) bool {
-	if node.Data == "style" {
-		for child := node.FirstChild; child != nil; child = child.NextSibling {
-			if child.Type != html.TextNode {
-				continue
-			}
-			for _, resource := range scanCSSResources(child.Data) {
-				if referencesDecorativeImage(resource.value) {
-					return true
-				}
-			}
-		}
+func referencesDecorativeImage(value string) bool {
+	candidate := strings.TrimSpace(value)
+	if suffix := strings.IndexAny(candidate, "?#"); suffix >= 0 {
+		candidate = candidate[:suffix]
 	}
-	for _, attr := range node.Attr {
-		name := strings.ToLower(attr.Key)
-		switch name {
-		case "data":
-			if node.Data == "object" && referencesDecorativeImage(attr.Val) {
-				return true
-			}
-		case "href":
-			if node.Namespace == "svg" && node.Data == "image" && referencesDecorativeImage(attr.Val) {
-				return true
-			}
-		case "poster":
-			if node.Data == "video" && referencesDecorativeImage(attr.Val) {
-				return true
-			}
-		case "src":
-			if node.Data == "img" && referencesDecorativeImage(attr.Val) {
-				return true
-			}
-		case "srcset":
-			if (node.Data == "img" || node.Data == "source") && referencesDecorativeImage(attr.Val) {
-				return true
-			}
-		case "background":
-			if (node.Data == "body" || node.Data == "td" || node.Data == "th") && referencesDecorativeImage(attr.Val) {
-				return true
-			}
-		case "style":
-			for _, resource := range scanCSSResources(attr.Val) {
-				if referencesDecorativeImage(resource.value) {
-					return true
-				}
-			}
-		}
+	candidate = strings.TrimRight(candidate, "/\\")
+	if separator := strings.LastIndexAny(candidate, "/\\"); separator >= 0 {
+		candidate = candidate[separator+1:]
+	}
+	switch {
+	case strings.EqualFold(candidate, "email_top.png"),
+		strings.EqualFold(candidate, "email_mid.png"),
+		strings.EqualFold(candidate, "email_bottom.png"):
+		return true
 	}
 	return false
 }
 
-func referencesDecorativeImage(value string) bool {
-	for _, candidate := range strings.FieldsFunc(value, func(char rune) bool {
-		return unicode.IsSpace(char) || strings.ContainsRune(`()'"=,;[]{}<>`, char)
-	}) {
-		candidate = strings.TrimSpace(candidate)
-		if suffix := strings.IndexAny(candidate, "?#"); suffix >= 0 {
-			candidate = candidate[:suffix]
-		}
-		candidate = strings.TrimRight(candidate, "/\\")
-		if separator := strings.LastIndexAny(candidate, "/\\"); separator >= 0 {
-			candidate = candidate[separator+1:]
-		}
-		switch {
-		case strings.EqualFold(candidate, "email_top.png"),
-			strings.EqualFold(candidate, "email_mid.png"),
-			strings.EqualFold(candidate, "email_bottom.png"):
+func containsLegacyEmailCSSURL(value string) bool {
+	for _, resource := range scanCSSResources(value) {
+		if referencesDecorativeImage(resource.value) {
 			return true
 		}
 	}
@@ -395,6 +341,87 @@ func containsNonEmbeddedCSSURL(value string) bool {
 		}
 	}
 	return false
+}
+
+func edededFallbackDeclaration(declaration string) (string, bool) {
+	colon := indexCSS(declaration, ':')
+	if colon < 0 {
+		return "", false
+	}
+	value := declaration[colon+1:]
+	color, ok := edededColorToken(value)
+	if !ok {
+		return "", false
+	}
+	important := ""
+	if hasCSSImportant(value) {
+		important = " !important"
+	}
+	return declaration[:colon+1] + color + important, true
+}
+
+func edededColorToken(value string) (string, bool) {
+	resourceEnds := cssResourceEnds(value)
+	for pos := 0; pos < len(value); {
+		if end := resourceEnds[pos]; end > pos {
+			pos = end
+			continue
+		}
+		if value[pos] == '/' && pos+1 < len(value) && value[pos+1] == '*' {
+			pos = skipCSSComment(value, pos, len(value))
+			continue
+		}
+		if value[pos] == '\'' || value[pos] == '"' {
+			pos = skipCSSString(value, pos, len(value))
+			continue
+		}
+		if value[pos] == '#' && pos+len("#ededed") <= len(value) &&
+			strings.EqualFold(value[pos:pos+len("#ededed")], "#ededed") &&
+			(pos == 0 || !isCSSIdentifierByte(value[pos-1])) &&
+			(pos+len("#ededed") == len(value) || !isCSSIdentifierByte(value[pos+len("#ededed")])) {
+			return value[pos : pos+len("#ededed")], true
+		}
+		pos++
+	}
+	return "", false
+}
+
+func hasCSSImportant(value string) bool {
+	resourceEnds := cssResourceEnds(value)
+	for pos := 0; pos < len(value); {
+		if end := resourceEnds[pos]; end > pos {
+			pos = end
+			continue
+		}
+		if value[pos] == '/' && pos+1 < len(value) && value[pos+1] == '*' {
+			pos = skipCSSComment(value, pos, len(value))
+			continue
+		}
+		if value[pos] == '\'' || value[pos] == '"' {
+			pos = skipCSSString(value, pos, len(value))
+			continue
+		}
+		if value[pos] == '!' {
+			start := skipCSSSpaceAndComments(value, pos+1, len(value))
+			end := scanCSSIdentifier(value, start, len(value))
+			if start < end && strings.EqualFold(decodeCSSEscapes(value[start:end]), "important") &&
+				(end == len(value) || !isCSSIdentifierByte(value[end])) {
+				return true
+			}
+		}
+		pos++
+	}
+	return false
+}
+
+func cssResourceEnds(value string) map[int]int {
+	ends := make(map[int]int)
+	for _, resource := range scanCSSResources(value) {
+		if resource.end > ends[resource.start] {
+			ends[resource.start] = resource.end
+		}
+	}
+	return ends
 }
 
 func isCSSIdentifierByte(value byte) bool {
@@ -441,21 +468,7 @@ func matchingCSSParen(value string, open int) int {
 }
 
 func keepDeclaration(property, value string) bool {
-	property = strings.TrimSpace(strings.ToLower(property))
-	lowerValue := strings.ToLower(value)
-	borderColor := false
-	switch property {
-	case "border", "border-color",
-		"border-top", "border-right", "border-bottom", "border-left",
-		"border-top-color", "border-right-color", "border-bottom-color", "border-left-color",
-		"border-block", "border-inline", "border-block-color", "border-inline-color",
-		"border-block-start", "border-block-end", "border-inline-start", "border-inline-end",
-		"border-block-start-color", "border-block-end-color", "border-inline-start-color", "border-inline-end-color":
-		borderColor = true
-	}
-	if property != "color" && !borderColor && strings.Contains(lowerValue, "#ededed") {
-		return false
-	}
+	_ = property
 	return !containsNonEmbeddedCSSURL(value)
 }
 
@@ -463,17 +476,29 @@ func normalizeDeclarations(value string, assets map[string]message.Asset, scaleF
 	parts := splitCSS(value, ';')
 	kept := parts[:0]
 	for _, declaration := range parts {
+		if containsLegacyEmailCSSURL(declaration) {
+			continue
+		}
 		if err := validateCSSCIDReferences(declaration, assets); err != nil {
 			return "", err
 		}
 		if containsSourceDataImage(declaration) {
-			continue
+			if fallback, ok := edededFallbackDeclaration(declaration); ok {
+				declaration = fallback
+			} else {
+				continue
+			}
 		}
 		replaced, err := replaceStyleURLs(declaration, assets)
 		if err != nil {
 			return "", err
 		}
 		declaration = replaced
+		if containsNonEmbeddedCSSURL(declaration) {
+			if fallback, ok := edededFallbackDeclaration(declaration); ok {
+				declaration = fallback
+			}
+		}
 		colon := indexCSS(declaration, ':')
 		if colon < 0 {
 			if !containsNonEmbeddedCSSURL(declaration) {
