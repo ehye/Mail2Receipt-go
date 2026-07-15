@@ -104,7 +104,7 @@ body margins and sets the page margin to zero, yielding the full 148 x 210 mm
 printable area while preserving the receipt's remaining HTML and inline styles.
 CDP PDF margins are also zero.
 
-Printing uses a fixed scale of 0.83. The renderer rejects unsupported or
+Printing uses a fixed scale of 0.79. The renderer rejects unsupported or
 horizontally overflowing content, and prints vertically overflowing content
 across as many A5 portrait pages as necessary. After rendering, the program
 verifies the PDF is nonempty, contains at least one page, and uses A5 portrait
@@ -144,7 +144,7 @@ that require Edge or Chrome skip with an explicit reason if neither browser
 exists.
 
 An end-to-end test converts `receipt.eml` and checks that the output is a
-nonempty A5 portrait PDF reported at scale 0.83.
+nonempty A5 portrait PDF reported at scale 0.79.
 
 Release verification runs all tests, builds a stripped Windows executable, and
 fails if its size exceeds 20 MB.

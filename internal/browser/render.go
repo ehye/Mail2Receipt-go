@@ -18,7 +18,7 @@ import (
 )
 
 const (
-	fixedScale      = 0.83
+	fixedScale      = 0.79
 	printableWidth  = 148 * 96 / 25.4
 	printableHeight = 210 * 96 / 25.4
 )
