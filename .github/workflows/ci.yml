@@ -1,0 +1,20 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      - run: go test ./... -count=1 -timeout 180s
+      - run: go vet ./...
+      - run: go build -trimpath -ldflags="-s -w" -o dist/mail2receipt.exe ./cmd/mail2receipt
