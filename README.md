@@ -1,5 +1,9 @@
 # Mail2Receipt-go
 
+[![CI](https://github.com/ehye/Mail2Receipt-go/actions/workflows/ci.yml/badge.svg)](https://github.com/ehye/Mail2Receipt-go/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/ehye/Mail2Receipt-go?style=flat-square&logo=github&logoColor=white&label=release&sort=semver)](https://github.com/ehye/Mail2Receipt-go/releases/latest)
+[![Go](https://img.shields.io/github/go-mod/go-version/ehye/Mail2Receipt-go?branch=main&style=flat-square&logo=go&logoColor=white&label=go)](https://github.com/ehye/Mail2Receipt-go/blob/main/go.mod)
+
 Convert the HTML body of a receipt email (`.eml`) into an A5 portrait PDF on Windows.
 
 ## Requirements
