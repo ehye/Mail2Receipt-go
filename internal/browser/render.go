@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"regexp"
 
+	"github.com/chromedp/cdproto/cdp"
 	"github.com/chromedp/cdproto/emulation"
 	"github.com/chromedp/cdproto/network"
 	"github.com/chromedp/cdproto/page"
@@ -71,7 +72,12 @@ func renderWithInspection(ctx context.Context, executable, htmlPath string, insp
 	pageURL := (&url.URL{Scheme: "file", Path: filepath.ToSlash(absPath)}).String()
 	if err := chromedp.Run(browserCtx,
 		network.Enable(),
-		network.SetBlockedURLs([]string{"http://*", "https://*"}),
+		chromedp.ActionFunc(func(ctx context.Context) error {
+			params := struct {
+				URLs []string `json:"urls"`
+			}{URLs: []string{"http://*", "https://*"}}
+			return cdp.Execute(ctx, network.CommandSetBlockedURLs, &params, nil)
+		}),
 		page.Enable(),
 		emulation.SetScriptExecutionDisabled(true),
 		chromedp.Navigate(pageURL),
