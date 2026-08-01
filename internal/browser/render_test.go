@@ -393,10 +393,10 @@ func TestRenderPreparedEmbeddedLogosOffline(t *testing.T) {
 	}))
 	defer server.Close()
 
-	prepared, err := document.Prepare(message.Document{HTML: []byte(fmt.Sprintf(`<html><head><style>img{max-width:500px;height:auto}</style></head><body>
+	prepared, err := document.Prepare(message.Document{HTML: fmt.Appendf(nil, `<html><head><style>img{max-width:500px;height:auto}</style></head><body>
 <img id="lockup" src="%s/google-play-crm-lockup-ic-h-transparent-w688px-h140px-2x.png">
 <img id="logo" src="%s/google-play-crm-logo-transparent-w192px-h192px-2x.png">
-</body></html>`, server.URL, server.URL))})
+</body></html>`, server.URL, server.URL)})
 	if err != nil {
 		t.Fatal(err)
 	}
