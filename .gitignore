@@ -17,3 +17,6 @@ Thumbs.db
 
 *.eml
 *.pdf
+
+.superpowers/
+docs/
