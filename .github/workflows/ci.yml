@@ -18,3 +18,138 @@ jobs:
       - run: go test ./... -count=1 -timeout 300s
       - run: go vet ./...
       - run: go build -trimpath -ldflags="-s -w" -o dist/mail2receipt.exe ./cmd/mail2receipt
+      - name: Verify release size
+        run: if (-not ((Get-Item -LiteralPath "dist/mail2receipt.exe").Length -lt 20MB)) { throw "Release executable must be smaller than 20 MB" }
+      - name: Upload Windows executable
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: actions/upload-artifact@v7
+        with:
+          name: mail2receipt-windows
+          path: dist/mail2receipt.exe
+          if-no-files-found: error
+          retention-days: 1
+
+  release:
+    needs: test
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - uses: actions/download-artifact@v8
+        with:
+          name: mail2receipt-windows
+          path: dist
+      - name: Verify release executable
+        run: |
+          if (-not (Test-Path -LiteralPath "dist/mail2receipt.exe" -PathType Leaf)) { throw "Release executable is missing" }
+          if (-not ((Get-Item -LiteralPath "dist/mail2receipt.exe").Length -lt 20MB)) { throw "Release executable must be smaller than 20 MB" }
+      - name: Publish release
+        id: version
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          TARGET: ${{ github.sha }}
+        run: |
+          function Get-SemVerTags {
+            git tag --list | ForEach-Object {
+              if ($_ -match '^v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$') {
+                [pscustomobject]@{
+                  Tag = $_
+                  Major = [System.Numerics.BigInteger]::Parse($Matches[1])
+                  Minor = [System.Numerics.BigInteger]::Parse($Matches[2])
+                  Patch = [System.Numerics.BigInteger]::Parse($Matches[3])
+                }
+              }
+            }
+          }
+
+          function Test-ReleaseExists($tag) {
+            $response = gh api "repos/$env:REPOSITORY/releases/tags/$tag" --silent 2>&1
+            if ($LASTEXITCODE -eq 0) { return $true }
+            if ($response -match '\(HTTP 404\)') { return $false }
+            throw "Failed to check release $tag`: $response"
+          }
+
+          function Test-ReleaseAsset($tag) {
+            $response = gh api "repos/$env:REPOSITORY/releases/tags/$tag" --jq '[.assets[] | select(.name == "mail2receipt.exe") | {size, digest}]' 2>&1
+            if ($LASTEXITCODE -ne 0) { throw "Failed to inspect release asset for $tag`: $response" }
+            $assets = @($response | ConvertFrom-Json)
+            return $assets.Count -eq 1 -and
+              [int64]$assets[0].size -eq $script:localAssetSize -and
+              [string]$assets[0].digest -ceq $script:localAssetDigest
+          }
+
+          function Confirm-ReleaseAsset($tag) {
+            if (Test-ReleaseAsset $tag) { return }
+
+            gh release upload "$tag" "dist/mail2receipt.exe#mail2receipt.exe" --clobber
+            if ($LASTEXITCODE -ne 0) {
+              if (Test-ReleaseAsset $tag) { return }
+              throw "Failed to repair release asset for $tag"
+            }
+            if (-not (Test-ReleaseAsset $tag)) { throw "Release asset verification failed for $tag" }
+          }
+
+          $script:localAssetSize = (Get-Item -LiteralPath "dist/mail2receipt.exe").Length
+          $localHash = (Get-FileHash -LiteralPath "dist/mail2receipt.exe" -Algorithm SHA256).Hash.ToLowerInvariant()
+          $script:localAssetDigest = "sha256:$localHash"
+          $collisionCount = 0
+          while ($true) {
+            git fetch --tags --force
+            if ($LASTEXITCODE -ne 0) { throw "Failed to fetch tags" }
+
+            $tags = @(Get-SemVerTags)
+            $commitTag = $tags | Where-Object {
+              (git rev-list -n 1 $_.Tag) -eq $env:TARGET
+            } | Sort-Object Major, Minor, Patch -Descending | Select-Object -First 1
+
+            if ($null -ne $commitTag) {
+              $tag = $commitTag.Tag
+              if (Test-ReleaseExists $tag) {
+                Confirm-ReleaseAsset $tag
+                "Release $tag and its asset already exist for $env:TARGET"
+                "tag=$tag" >> $env:GITHUB_OUTPUT
+                exit 0
+              }
+
+              gh release create "$tag" "dist/mail2receipt.exe#mail2receipt.exe" --target "$env:TARGET" --generate-notes
+              if ($LASTEXITCODE -eq 0) {
+                Confirm-ReleaseAsset $tag
+                "tag=$tag" >> $env:GITHUB_OUTPUT
+                exit 0
+              }
+              if (Test-ReleaseExists $tag) {
+                Confirm-ReleaseAsset $tag
+                "tag=$tag" >> $env:GITHUB_OUTPUT
+                exit 0
+              }
+              throw "Failed to create release for existing tag $tag"
+            }
+
+            $latest = $tags | Sort-Object Major, Minor, Patch -Descending | Select-Object -First 1
+            if ($null -eq $latest) {
+              $tag = "v0.0.1"
+            } else {
+              $tag = "v$($latest.Major).$($latest.Minor).$($latest.Patch + 1)"
+            }
+
+            gh release create "$tag" "dist/mail2receipt.exe#mail2receipt.exe" --target "$env:TARGET" --generate-notes
+            if ($LASTEXITCODE -eq 0) {
+              Confirm-ReleaseAsset $tag
+              "tag=$tag" >> $env:GITHUB_OUTPUT
+              exit 0
+            }
+
+            git fetch --tags --force
+            if ($LASTEXITCODE -ne 0) { throw "Release creation failed and tags could not be refreshed" }
+            git show-ref --verify --quiet "refs/tags/$tag"
+            if ($LASTEXITCODE -ne 0) { throw "Release creation failed without a tag collision for $tag" }
+            $collisionCount++
+            $delay = [Math]::Min($collisionCount, 5)
+            "Tag collision on $tag; recomputing after ${delay}s"
+            Start-Sleep -Seconds $delay
+          }
