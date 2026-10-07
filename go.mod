@@ -1,21 +1,14 @@
 module mail2receipt
 
-go 1.26.0
+go 1.27
 
 require (
-	github.com/chromedp/cdproto v0.0.0-20260714215040-dc233986426f
-	github.com/chromedp/chromedp v0.16.0
+	github.com/chromedp/cdproto v0.157.4
+	github.com/chromedp/chromedp v0.19.1
 	github.com/emersion/go-message v0.18.2
 	golang.org/x/net v0.59.0
 	golang.org/x/sys v0.48.0
 	rsc.io/pdf v0.1.1
 )
 
-require (
-	github.com/chromedp/sysutil v1.1.0 // indirect
-	github.com/go-json-experiment/json v0.0.0-20260623181947-01eb4420fa68 // indirect
-	github.com/gobwas/httphead v0.1.0 // indirect
-	github.com/gobwas/pool v0.2.1 // indirect
-	github.com/gobwas/ws v1.4.0 // indirect
-	golang.org/x/text v0.42.0 // indirect
-)
+require golang.org/x/text v0.42.0 // indirect
