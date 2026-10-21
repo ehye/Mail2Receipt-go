@@ -1,5 +1,5 @@
-github.com/chromedp/cdproto v0.157.8 h1:Tkq0AjsUlC3Z4sJfHBzV/uAAxnTF/AZyuSTjfV/1gvk=
-github.com/chromedp/cdproto v0.157.8/go.mod h1:h68JaIuFr9o3yiayxEYhBdvaxgYO3shDrPSYhNlyfu0=
+github.com/chromedp/cdproto v0.158.2 h1:EIrQ/1Ns6+WEmaK23ynKbWm+kMV1IeG5hd8zyOLSMXs=
+github.com/chromedp/cdproto v0.158.2/go.mod h1:h68JaIuFr9o3yiayxEYhBdvaxgYO3shDrPSYhNlyfu0=
 github.com/chromedp/chromedp v0.21.0 h1:nVHgS2LHyhZJ1l3BWRbG2eFIFYiJMnvkJbELbd8WBoQ=
 github.com/chromedp/chromedp v0.21.0/go.mod h1:6z1Y5FdKUxRzxx2qcC5h1xjaBJrSWrZp1mjgITfNZig=
 github.com/emersion/go-message v0.18.2 h1:rl55SQdjd9oJcIoQNhubD2Acs1E6IzlZISRTK7x/Lpg=
