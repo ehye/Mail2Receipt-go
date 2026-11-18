@@ -3,8 +3,8 @@ module mail2receipt
 go 1.27
 
 require (
-	github.com/chromedp/cdproto v0.159.2
-	github.com/chromedp/chromedp v0.23.0
+	github.com/chromedp/cdproto v0.160.1
+	github.com/chromedp/chromedp v0.23.1
 	github.com/emersion/go-message v0.18.2
 	golang.org/x/net v0.62.0
 	golang.org/x/sys v0.50.0
