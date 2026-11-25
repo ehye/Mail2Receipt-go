@@ -4,7 +4,7 @@ go 1.27
 
 require (
 	github.com/chromedp/cdproto v0.160.3
-	github.com/chromedp/chromedp v0.23.1
+	github.com/chromedp/chromedp v0.24.0
 	github.com/emersion/go-message v0.18.2
 	golang.org/x/net v0.62.0
 	golang.org/x/sys v0.50.0
